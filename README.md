@@ -6,14 +6,14 @@
 使用方式:
 首先，运行bot.py
 第一步：跑起 NapCatQQ 容器
-由于你的 bot.py 占用了一个终端窗口，请在 Mac 的终端里 新建一个标签页（或新窗口），然后把这串命令复制进去敲回车：
+由于你的 bot.py 占用了一个终端窗口，请在 Linux 的终端里 新建一个标签页（或新窗口），然后把这串命令复制进去敲回车：
 ```bash
 sudo docker run -d --network host --name napcat -e WEBUI_TOKEN=123456 mlikiowa/napcat-docker:latest
 ```
 > 这行指令会去拉取一个最新版的免安装无头 QQ，对外暴露 6099 端口作为网页控制台，并且设置登录密码为 123456
 
 第二步：去网页后台上号！
-当指令执行完并打印出一长串哈希值后，说明它跑起来了。 请打开你的浏览器，访问： 👉 http://127.0.0.1:6099/webui
+当指令执行完并打印出一长串哈希值后，说明它跑起来了。 请打开你的浏览器，访问： 👉 http://服务器公网ip:6099/webui
 
 你会进入 NapCatQQ 的高颜值控制台：
 1. 密码：输入刚才设定的 123456。
@@ -23,7 +23,7 @@ sudo docker run -d --network host --name napcat -e WEBUI_TOKEN=123456 mlikiowa/n
 当你扫码登录成功后，在网页的左侧侧边栏，找到 【网络配置】(Network)。
 
 往下滚动，找到 反向 WebSocket (Reverse WebSocket) 这一栏。
-点击新增，在 URL 地址框里填入这个极其重要的地址： ws://host.docker.internal:8080/onebot/v11/ws (⚠️ 注意：因为 QQ 是跑在 Docker 里的，它不能叫 127.0.0.1，必须用 host.docker.internal 才能穿过集装箱，找到你 Mac 物理机上的 Python 8080 端口)
+点击新增，在 URL 地址框里填入这个极其重要的地址： ws://127.0.0.1:8080/onebot/v11/ws
 保存并启用！
 
 更新介绍:
