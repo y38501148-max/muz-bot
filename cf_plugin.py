@@ -2,7 +2,7 @@ import httpx
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Message, MessageEvent
 from nonebot.params import CommandArg
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 # 功能1： 查分
 cf_user_cmd = on_command("cf", aliases={"查cf"},
@@ -55,8 +55,12 @@ async def handle_cf_contest():
                 if not upcoming:
                     await cf_contest_cmd.finish("近期没有即将到来的cf比赛")
                 msg = "📅近期即将到来的cf比赛 \n"
+                # 定义东八区时区 (UTC+8)
+                tz_bjt = timezone(timedelta(hours=8))
+                
                 for c in upcoming[:3]:
-                    start_time = datetime.fromtimestamp(c["startTimeSeconds"])
+                    # 传入 tz 参数，强制转换为北京时间
+                    start_time = datetime.fromtimestamp(c["startTimeSeconds"], tz=tz_bjt)
                     time_str = start_time.strftime("%Y-%m-%d %H:%M")
                     msg += f"\n🏆.{c['name']}\n⏰时间:{time_str}\n"
                 await cf_contest_cmd.finish(msg)
