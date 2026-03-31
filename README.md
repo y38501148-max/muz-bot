@@ -8,11 +8,7 @@
 第一步：跑起 NapCatQQ 容器
 由于你的 bot.py 占用了一个终端窗口，请在 Mac 的终端里 新建一个标签页（或新窗口），然后把这串命令复制进去敲回车：
 ```bash
-docker run -d \
-  --name napcat \
-  -p 6099:6099 \
-  -e WEBUI_TOKEN=123456 \
-  mlikiowa/napcat-docker:latest
+sudo docker run -d --network host --name napcat -e WEBUI_TOKEN=123456 mlikiowa/napcat-docker:latest
 ```
 > 这行指令会去拉取一个最新版的免安装无头 QQ，对外暴露 6099 端口作为网页控制台，并且设置登录密码为 123456
 
