@@ -43,7 +43,7 @@ async def handle_help(args: Message = CommandArg()):
             "请输入 [/help plugin_name] 获取详细说明：\n"
         "👉 cf  : Codeforces相关\n"
         "👉 签到 : 积分与活跃度\n"
-        "👉 duaa : 智慧教室相关"
+        "👉 duaa : 智慧教室相关\n"
         "=====================\n"
         "💡 提示：指令开头的斜杠 / 为必须输入哦！"
     )
