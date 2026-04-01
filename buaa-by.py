@@ -64,18 +64,27 @@ async def handle_boya(event: MessageEvent, args: Message = CommandArg()):
                     selectable_courses.append(c)
             except: continue
 
+# /Users/muzermat/Desktop/python/project1/buaa-by.py
+
         # 3. 构造消息
         msg = f"📊 全校博雅实时监测报告\n"
+        
         if selectable_courses:
             msg += "\n✨ 【当前有余位，建议抢课】"
             for c in selectable_courses:
                 left = c['courseMaxCount'] - c['courseCurrentCount']
-                msg += f"\n- {c['courseName']}\n  🔥 剩余:{left}位 | 教室:{c.get('coursePosition') or '待定'}"
+                # 提取类别和上课时间
+                kind = c.get("courseNewKind2", {}).get("kindName", "未知")
+                start_time = c.get("courseStartDate", "待定")[5:16] # 04-01 19:00
+                
+                msg += f"\n- {c['courseName']}\n  🔥 剩余:{left} | 类别:{kind} | ⏰:{start_time}\n  📍 教室:{c.get('coursePosition') or '待定'}"
         
         if upcoming_courses:
             msg += "\n\n🚀 【即将选课预告】"
             for c in upcoming_courses:
-                msg += f"\n- {c['courseName']}\n  ⏳ 开启:{c['courseSelectStartDate'][5:16]}"
+                kind = c.get("courseNewKind2", {}).get("kindName", "未知分类")
+                msg += f"\n- {c['courseName']}\n  ⏳ 开启:{c['courseSelectStartDate'][5:16]} | 类别:{kind}"
+
         
         if not selectable_courses and not upcoming_courses:
             msg += "\n📅 暂无推荐课程 (请稍后再试)"
