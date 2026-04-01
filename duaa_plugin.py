@@ -12,15 +12,11 @@ USER_DIR = BASE_DATA_DIR / "users"
 USER_DIR.mkdir(parents=True, exist_ok=True)
 
 # BUAA iclass API 地址
-LOGIN_URL = "https://10.20.11.166:88/app/user/login.action"
-SCHEDULE_URL = "https://10.20.11.166:88/app/course/get_stu_course_sched.action"
-CHECKIN_URL = "http://10.20.11.166:8081/app/course/stu_scan_sign.action"
+LOGIN_URL = "https://iclass.buaa.edu.cn:8347/app/user/login.action"
+SCHEDULE_URL = "https://iclass.buaa.edu.cn:8347/app/course/get_stu_course_sched.action"
+CHECKIN_URL = "http://iclass.buaa.edu.cn:8081/app/course/stu_scan_sign.action"
 
 UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ3A.230901.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/116.0.0.0 Mobile Safari/537.36"
-
-# 修复后的代理配置：统一指向本地 VPN 容器
-# 如果你的 httpx 版本较低，建议直接指定一个全局 proxy
-PROXY_URL = "http://127.0.0.1:8888"
 
 # 2. 单个用户文件操作
 def get_user_file(qq_id):
@@ -38,8 +34,7 @@ def save_user_data(qq_id, data):
 
 # 3. 核心 API
 async def duaa_login(student_id):
-    # 修改：使用 proxy 代替 proxies 以保证兼容性
-    async with httpx.AsyncClient(verify=False, proxy=PROXY_URL) as client:
+    async with httpx.AsyncClient(verify=False) as client:
         params = {"phone": student_id, "password": "", "verificationType": "2", "userLevel": "1"}
         try:
             res = await client.get(LOGIN_URL, params=params, headers={"User-Agent": UA}, timeout=10)
@@ -55,8 +50,7 @@ async def duaa_login(student_id):
 
 async def get_schedule(user_id, session_id):
     date_str = datetime.now().strftime("%Y%m%d")
-    # 修改：使用 proxy 代替 proxies
-    async with httpx.AsyncClient(verify=False, proxy=PROXY_URL) as client:
+    async with httpx.AsyncClient(verify=False) as client:
         try:
             res = await client.get(
                 SCHEDULE_URL, 
@@ -130,9 +124,11 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
         
         target_course = sched[idx]
         
+        # --- 1. “重复签到”检查 ---
         if target_course.get("signStatus") == "1":
             await duaa_cmd.finish("你已经签到过了哦")
 
+        # --- 2. “时间卫士”逻辑 (修复：确保 finish 不被 catch) ---
         if not force_mode:
             valid_start = valid_end = None
             try:
@@ -145,6 +141,7 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             except Exception as e:
                 print(f"DEBUG: 时间解析故障: {e}")
             
+            # 将 finish 移出 try 块
             if valid_start and now < valid_start:
                 await duaa_cmd.finish(
                     f"⏰ 还没到时候呢！\n《{target_course['courseName']}》的有效窗口为：\n{valid_start.strftime('%H:%M')} ~ {valid_end.strftime('%H:%M')}\n(如需强制开启请加参数 -su)"
@@ -152,6 +149,7 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             if valid_end and now > valid_end:
                 await duaa_cmd.finish(f"🚫 太晚啦！签到窗口已关闭。")
 
+        # --- 3. 执行物理签到请求 ---
         sched_id = target_course["id"]
         course_name = target_course["courseName"]
         sid = user_data["student_id"]
@@ -160,8 +158,7 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             await duaa_cmd.finish("❌ 签到失败：无法建立校内连接")
         
         ts = int(datetime.now().timestamp() * 1000) + 36000
-        # 修改：使用 proxy 代替 proxies
-        async with httpx.AsyncClient(verify=False, proxy=PROXY_URL) as client:
+        async with httpx.AsyncClient(verify=False) as client:
             headers = {
                 "Sessionid": sess,
                 "User-Agent": UA,
