@@ -74,7 +74,7 @@ duaa_cmd = on_command("duaa", priority=5, block=True)
 async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
     sub_cmd = args.extract_plain_text().strip().split()
     if not sub_cmd:
-        await duaa_cmd.finish("🚀 Duaa 助手：\n/duaa 绑定 [学号]\n/duaa 课表\n/duaa 签到 [序号]")
+        await duaa_cmd.finish("🚀 Duaa 助手：\n/duaa 绑定 [学号]\n/duaa 课表\n/duaa 签到 [序号] [-su]")
     
     action = sub_cmd[0]
     qq_id = str(event.get_user_id())
@@ -114,8 +114,12 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
     elif action == "签到":
         if len(sub_cmd) < 2: await duaa_cmd.finish("请指定序号")
         try:
+            # 找到序号，可能是 /duaa 签到 1 或 /duaa 签到 1 -su
             idx = int(sub_cmd[1]) - 1
         except: await duaa_cmd.finish("序号无效")
+        
+        # 模式：超级用户模式 (-su) 可绕过时间限制
+        force_mode = "-su" in sub_cmd
         
         sched = user_data.get("today_schedule", [])
         if not sched or idx < 0 or idx >= len(sched):
@@ -127,26 +131,26 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
         if target_course.get("signStatus") == "1":
             await duaa_cmd.finish("你已经签到过了哦")
 
-        # --- 2. “时间卫士”逻辑 (手动前置检查) ---
-        try:
-            now = datetime.now()
-            fmt = "%Y-%m-%d %H:%M:%S"
-            begin_t = datetime.strptime(target_course["classBeginTime"], fmt)
-            end_t = datetime.strptime(target_course["classEndTime"], fmt)
-            
-            # 手动限制：上课前10分钟 到 下课前1分钟
-            valid_start = begin_t - timedelta(minutes=10)
-            valid_end = end_t - timedelta(minutes=1)
-            
-            if now < valid_start:
-                await duaa_cmd.finish(
-                    f"⏰ 还没到时候呢！\n《{target_course['courseName']}》的有效签到时间为：\n{valid_start.strftime('%H:%M')} ~ {valid_end.strftime('%H:%M')}"
-                )
-            if now > valid_end:
-                await duaa_cmd.finish(f"🚫 太晚啦！已经到了下课冲刺阶段（下课前1分钟），签到窗口已关闭。")
-        except Exception as e:
-            # 如果解析时间出错（比如格式不对），记录日志但不中断，保证功能可用
-            print(f"DEBUG: 时间解析故障: {e}")
+        # --- 2. “时间卫士”逻辑 ---
+        if not force_mode:
+            try:
+                now = datetime.now()
+                fmt = "%Y-%m-%d %H:%M:%S"
+                begin_t = datetime.strptime(target_course["classBeginTime"], fmt)
+                end_t = datetime.strptime(target_course["classEndTime"], fmt)
+                
+                # 合法：上课前10分钟 到 下课前1分钟
+                valid_start = begin_t - timedelta(minutes=10)
+                valid_end = end_t - timedelta(minutes=1)
+                
+                if now < valid_start:
+                    await duaa_cmd.finish(
+                        f"⏰ 还没到时候呢！\n《{target_course['courseName']}》的有效窗口为：\n{valid_start.strftime('%H:%M')} ~ {valid_end.strftime('%H:%M')}\n(如需强制开启请加参数 -su)"
+                    )
+                if now > valid_end:
+                    await duaa_cmd.finish(f"🚫 太晚啦！签到窗口已关闭。")
+            except Exception as e:
+                print(f"DEBUG: 时间解析故障: {e}")
 
         # --- 3. 执行物理签到请求 ---
         sched_id = target_course["id"]
@@ -157,6 +161,7 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
         if not uid or not sess:
             await duaa_cmd.finish("❌ 签到失败：无法建立校内连接")
         
+        # 时间戳 + 36000 偏移量保持和原脚本一致
         ts = int(datetime.now().timestamp() * 1000) + 36000
         async with httpx.AsyncClient(verify=False) as client:
             headers = {
@@ -171,7 +176,7 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             )
             res_data = res.json()
             if res_data.get("STATUS") == "0":
-                await duaa_cmd.finish(f"🎯 《{course_name}》 签到成功！")
+                await duaa_cmd.finish(f"🎯 《{course_name}》 签到成功！" + (" (强制模式)" if force_mode else ""))
             else:
                 await duaa_cmd.finish(f"❌ 签到失败：{res_data.get('ERRMSG', '未知原因')}")
 
