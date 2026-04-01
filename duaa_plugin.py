@@ -41,12 +41,24 @@ async def duaa_login(student_id):
     return None, None, None
 
 async def get_schedule(user_id, session_id):
-    date_str = date.today().strftime("%Y%m%d")
+    # 尝试两种日期格式，先按原脚本的 YYYYMMDD
+    date_str = datetime.now().strftime("%Y%m%d")
     async with httpx.AsyncClient(verify=False) as client:
         try:
-            res = await client.post(f"{SCHEDULE_URL}?id={user_id}",params={"dateStr":date_str},headers={"Sessionid":session_id, "User-Agent":UA},timeout=10)
-            return res.json().get("result",[])
-        except Exception:pass
+            # 方案：改用 GET 模式，并打印完整返回以供调试
+            res = await client.get(
+                f"{SCHEDULE_URL}", 
+                params={"id": user_id, "dateStr": date_str},
+                headers={"Sessionid": session_id, "User-Agent": UA}, 
+                timeout=10
+            )
+            data = res.json()
+            if data.get("STATUS") == "0":
+                return data.get("result", [])
+            else:
+                print(f"DEBUG: 课表查询业务失败，返回：{data}")
+        except Exception as e:
+            print(f"DEBUG: 课表查询网络异常：{str(e)}")
     return []
 
 duaa_cmd = on_command("duaa", priority=5, block=True)
