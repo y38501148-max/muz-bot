@@ -12,14 +12,17 @@ if not DATA_DIR.exists():
 
 MES_FILE = Path("data/signin/messages.txt")
 def load_messages():
-    if not MES_FILE.exists():
-        DEF_MESSAGES = [
+    DEF_MESSAGES = [
     "今天也是非常喜欢你的一天呢~",
     "早起的鸟儿有虫吃~",
     "我爱你,我比全世界任何一个人都爱你",
     "签到成功，好运值+1!",
     "让我们永远在一起吧！"
     ]
+    if MES_FILE.stat().st_size == 0:
+        MES_FILE.write_text("\n".join(DEF_MESSAGES), encoding="utf-8")
+        return DEF_MESSAGES
+    if not MES_FILE.exists():
         MES_FILE.write_text("\n".join(DEF_MESSAGES), encoding="utf-8")
         return DEF_MESSAGES
     with open(MES_FILE, "r", encoding="utf-8") as f:
@@ -51,6 +54,7 @@ async def handle_signin(event: MessageEvent):
     user_data = load_user_data(user_id)
 
     today = str(date.today())
+    MESSAGES = load_messages()
     if (user_data["last_signin"] == today):
         await signin_cmd.finish("你今天已经签到过了哦")
     
@@ -60,7 +64,6 @@ async def handle_signin(event: MessageEvent):
     save_user_data(user_id, user_data)
 
     avatar_url = f"https://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640"
-    MESSAGES = load_messages()
     msg_text = random.choice(MESSAGES)
     
     response = MessageSegment.image(avatar_url) + \
