@@ -126,7 +126,8 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
         target_course = sched[idx]
         sched_id = target_course["id"]
         course_name = target_course["courseName"]
-        
+        if target_course["signStatus"] == "1":
+            await duaa_cmd.finish("你已经签到过了哦")
         # 签到前重新获取 Session 确保可用
         sid = user_data["student_id"]
         uid, sess, _ = await duaa_login(sid)
