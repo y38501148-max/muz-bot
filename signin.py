@@ -61,6 +61,7 @@ async def handle_signin(event: MessageEvent):
     added = random.randint(1, 100)
     user_data["points"] += added
     user_data["last_signin"] = today
+    user_data["nickname"] = getattr(event.sender, "nickname", user_id)
     save_user_data(user_id, user_data)
 
     avatar_url = f"https://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640"
@@ -96,7 +97,8 @@ async def handle_rank(event: MessageEvent):
     for file in DATA_DIR.glob("*.json"):
         with open(file, "r", encoding="utf-8") as f:
             data = json.load(f)
-            all_users.append((file.stem, data["points"]))
+            name = data.get("nickname", file.stem)
+            all_users.append((name, data["points"]))
     
     all_users.sort(key=lambda x: x[1], reverse=True)
     if not all_users:
