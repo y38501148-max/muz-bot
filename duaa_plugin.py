@@ -36,7 +36,8 @@ async def duaa_login(student_id):
             data = res.json()
             if data.get("STATUS") == "0":
                 return data["result"]["id"], data["result"]["sessionId"], data["result"].get("userName","未知姓名")
-        except Exception: pass
+        except Exception as e:
+            print(f"DEBUG:iclass 登录逻辑失败,返回数据:{data}")
     return None, None, None
 
 async def get_schedule(user_id, session_id):
