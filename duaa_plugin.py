@@ -12,9 +12,9 @@ USER_DIR = BASE_DATA_DIR / "users"
 USER_DIR.mkdir(parents=True, exist_ok=True)
 
 # BUAA iclass API 地址
-LOGIN_URL = "https://iclass.buaa.edu.cn:8347/app/user/login.action"
-SCHEDULE_URL = "https://iclass.buaa.edu.cn:8347/app/course/get_stu_course_sched.action"
-CHECKIN_URL = "http://iclass.buaa.edu.cn:8081/app/course/stu_scan_sign.action"
+LOGIN_URL = "https://10.20.11.166:8347/app/user/login.action"
+SCHEDULE_URL = "https://10.20.11.166:8347/app/course/get_stu_course_sched.action"
+CHECKIN_URL = "http://10.20.11.166:8081/app/course/stu_scan_sign.action"
 
 UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ3A.230901.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/116.0.0.0 Mobile Safari/537.36"
 
