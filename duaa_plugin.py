@@ -1,6 +1,6 @@
 import httpx
 import json
-from datatime import date
+from datetime import date
 from pathlib import Path
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Message, MessageEvent, MessageSegment
@@ -40,18 +40,18 @@ async def duaa_login(student_id):
     return None, None, None
 
 async def get_schedule(user_id, session_id):
-    date_str = date.today.strftime("%Y%m%d")
+    date_str = date.today().strftime("%Y%m%d")
     async with httpx.AsyncClient(verify=False) as client:
         try:
             res = await client.post(f"{SCHEDULE_URL}?id={user_id}",params={"dateStr":date_str},headers={"Sessionid":session_id, "User-Agent":UA},timeout=10)
-            return res.json.get("result",[])
+            return res.json().get("result",[])
         except Exception:pass
     return []
 
 duaa_cmd = on_command("duaa", priority=5, block=True)
 @duaa_cmd.handle()
 async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
-    sub_cmd = args.extract_plain_text().strip.split()
+    sub_cmd = args.extract_plain_text().strip().split()
     if not sub_cmd:
         await duaa_cmd.finish("指令格式错误,请输入/help duaa")
 
@@ -100,9 +100,9 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
         ts = int(datetime.now().timestamp() * 1000) + 36000
         async with httpx.AsyncClient(verify=False) as client:
             res = await client.post(f"{CHECKIN_URL}?id={uid}", params={"courseSchedId":schedule_id, "timestamp": ts}, headers={"SessionId":sess, "User-Agent":UA})
-            if res.json.get("STATUS") == "0":
+            if res.json().get("STATUS") == "0":
                 await duaa_cmd.finish(f"✅ 恭喜你已成功签到: {course_name}")
             else:
-                await duaa_cmd.finish(f"❌ 签到失败: {res.json.get('result', '未知错误')}")
+                await duaa_cmd.finish(f"❌ 签到失败: {res.json().get('result', '未知错误')}")
     
     
