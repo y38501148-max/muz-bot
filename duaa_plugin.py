@@ -20,7 +20,7 @@ UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ3A.230901.001; wv) AppleWe
 
 # 修复后的代理配置：统一指向本地 VPN 容器
 # 如果你的 httpx 版本较低，建议直接指定一个全局 proxy
-PROXY_URL = "socks5://127.0.0.1:1080"
+PROXY_URL = "http://127.0.0.1:8888"
 
 # 2. 单个用户文件操作
 def get_user_file(qq_id):
