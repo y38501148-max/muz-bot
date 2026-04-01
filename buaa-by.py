@@ -3,7 +3,7 @@ from datetime import datetime
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Message, MessageEvent
 from nonebot.params import CommandArg
-from .boya_utils import BoyaClient
+from boya_utils import BoyaClient
 
 # 配置路径
 CONFIG_PATH = Path("data/boya/by.txt")
