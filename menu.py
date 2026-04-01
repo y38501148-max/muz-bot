@@ -48,6 +48,7 @@ async def handle_help(args: Message = CommandArg()):
         "👉 cf  : Codeforces相关\n"
         "👉 签到 : 积分与活跃度\n"
         "👉 duaa : 智慧教室相关\n"
+        "👉 by : 博雅查询\n"
         "=====================\n"
         "💡 提示：指令开头的斜杠 / 为必须输入哦！"
     )
