@@ -1,6 +1,6 @@
 import httpx
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Message, MessageEvent
@@ -41,7 +41,6 @@ async def duaa_login(student_id):
             data = res.json()
             if data.get("STATUS") == "0":
                 results = data.get("result", {})
-                # 注意：返回的 JSON Key 是 sessionId
                 return results.get("id"), results.get("sessionId"), results.get("userName", "未知姓名")
             else:
                 print(f"DEBUG: iclass 登录业务失败，返回: {data}")
@@ -53,7 +52,6 @@ async def get_schedule(user_id, session_id):
     date_str = datetime.now().strftime("%Y%m%d")
     async with httpx.AsyncClient(verify=False) as client:
         try:
-            # 这里的 Header 是 Sessionid (小写 i)
             res = await client.get(
                 SCHEDULE_URL, 
                 params={"id": user_id, "dateStr": date_str},
@@ -124,11 +122,36 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             await duaa_cmd.finish("请先发送 [/duaa 课表] 刷新最新序号")
         
         target_course = sched[idx]
+        
+        # --- 1. “重复签到”检查 ---
+        if target_course.get("signStatus") == "1":
+            await duaa_cmd.finish("你已经签到过了哦")
+
+        # --- 2. “时间卫士”逻辑 (手动前置检查) ---
+        try:
+            now = datetime.now()
+            fmt = "%Y-%m-%d %H:%M:%S"
+            begin_t = datetime.strptime(target_course["classBeginTime"], fmt)
+            end_t = datetime.strptime(target_course["classEndTime"], fmt)
+            
+            # 手动限制：上课前10分钟 到 下课前1分钟
+            valid_start = begin_t - timedelta(minutes=10)
+            valid_end = end_t - timedelta(minutes=1)
+            
+            if now < valid_start:
+                await duaa_cmd.finish(
+                    f"⏰ 还没到时候呢！\n《{target_course['courseName']}》的有效签到时间为：\n{valid_start.strftime('%H:%M')} ~ {valid_end.strftime('%H:%M')}"
+                )
+            if now > valid_end:
+                await duaa_cmd.finish(f"🚫 太晚啦！已经到了下课冲刺阶段（下课前1分钟），签到窗口已关闭。")
+        except Exception as e:
+            # 如果解析时间出错（比如格式不对），记录日志但不中断，保证功能可用
+            print(f"DEBUG: 时间解析故障: {e}")
+
+        # --- 3. 执行物理签到请求 ---
         sched_id = target_course["id"]
         course_name = target_course["courseName"]
-        if target_course["signStatus"] == "1":
-            await duaa_cmd.finish("你已经签到过了哦")
-        # 签到前重新获取 Session 确保可用
+        
         sid = user_data["student_id"]
         uid, sess, _ = await duaa_login(sid)
         if not uid or not sess:
@@ -137,7 +160,7 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
         ts = int(datetime.now().timestamp() * 1000) + 36000
         async with httpx.AsyncClient(verify=False) as client:
             headers = {
-                "Sessionid": sess, # 必须是 Sessionid (小写 i)
+                "Sessionid": sess,
                 "User-Agent": UA,
                 "Content-Type": "application/x-www-form-urlencoded"
             }
