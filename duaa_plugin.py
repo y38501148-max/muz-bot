@@ -108,7 +108,10 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
         msg = f"📅 {user_data.get('real_name', '同学')} 的今日课表:\n"
         for i, c in enumerate(sched, 1):
             status = "✅已签" if c.get("signStatus") == "1" else "⏳未签"
-            msg += f"\n[{i}] 📖 {c['courseName']}\n    ⏰ {c['classBeginTime'][-8:-3]} | {status}"
+            # 尝试提取教室信息 (常用字段名包括 roomName, classroomName, placeName)
+            room = c.get("roomName") or c.get("classroomName") or c.get("placeName") or "未知地点"
+            
+            msg += f"\n[{i}] 📖 {c['courseName']}\n    📍 {room}\n    ⏰ {c['classBeginTime'][-8:-3]} | {status}"
         await duaa_cmd.finish(msg)
 
     elif action == "签到":
