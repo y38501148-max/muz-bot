@@ -26,7 +26,7 @@ HELP_DB = {
 }
 
 @help_cmd.handle()
-async def handle_help():
+async def handle_help(args: Message = CommandArg()):
     plugin_name = args.extract_plain_text().strip().lower()
 
     if not plugin_name:
