@@ -3,3 +3,4 @@ venv/
 # 绝对不要传 Python 运行时产生的缓存字节码
 __pycache__/
 .vscode
+buaavpn.md

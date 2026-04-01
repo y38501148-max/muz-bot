@@ -32,6 +32,10 @@ def save_user_data(qq_id, data):
     file_path = get_user_file(qq_id)
     file_path.write_text(json.dumps(data, ensure_ascii=False, indent=4), encoding="utf-8")
 
+proxies = {
+    "all://*.buaa.edu.cn": "http://localhost:1080",
+    "all://10.20.11.166": "http://localhost:1080"
+}
 # 3. 核心 API
 async def duaa_login(student_id):
     async with httpx.AsyncClient(verify=False) as client:
