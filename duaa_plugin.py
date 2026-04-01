@@ -18,12 +18,9 @@ CHECKIN_URL = "http://iclass.buaa.edu.cn:8081/app/course/stu_scan_sign.action"
 
 UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ3A.230901.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/116.0.0.0 Mobile Safari/537.36"
 
-# VPN 代理配置 (由 Docker-EasyConnect 提供的本地代理)
-# 只要请求地址匹配 buaa.edu.cn 或 10.20.11.166，就会走代理
-PROXIES = {
-    "all://*.buaa.edu.cn": "http://localhost:1080",
-    "all://10.20.11.166": "http://localhost:1080"
-}
+# 修复后的代理配置：统一指向本地 VPN 容器
+# 如果你的 httpx 版本较低，建议直接指定一个全局 proxy
+PROXY_URL = "http://localhost:1080"
 
 # 2. 单个用户文件操作
 def get_user_file(qq_id):
@@ -41,8 +38,8 @@ def save_user_data(qq_id, data):
 
 # 3. 核心 API
 async def duaa_login(student_id):
-    # 增加代理支持
-    async with httpx.AsyncClient(verify=False, proxies=PROXIES) as client:
+    # 修改：使用 proxy 代替 proxies 以保证兼容性
+    async with httpx.AsyncClient(verify=False, proxy=PROXY_URL) as client:
         params = {"phone": student_id, "password": "", "verificationType": "2", "userLevel": "1"}
         try:
             res = await client.get(LOGIN_URL, params=params, headers={"User-Agent": UA}, timeout=10)
@@ -58,8 +55,8 @@ async def duaa_login(student_id):
 
 async def get_schedule(user_id, session_id):
     date_str = datetime.now().strftime("%Y%m%d")
-    # 增加代理支持
-    async with httpx.AsyncClient(verify=False, proxies=PROXIES) as client:
+    # 修改：使用 proxy 代替 proxies
+    async with httpx.AsyncClient(verify=False, proxy=PROXY_URL) as client:
         try:
             res = await client.get(
                 SCHEDULE_URL, 
@@ -163,8 +160,8 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             await duaa_cmd.finish("❌ 签到失败：无法建立校内连接")
         
         ts = int(datetime.now().timestamp() * 1000) + 36000
-        # 增加代理支持
-        async with httpx.AsyncClient(verify=False, proxies=PROXIES) as client:
+        # 修改：使用 proxy 代替 proxies
+        async with httpx.AsyncClient(verify=False, proxy=PROXY_URL) as client:
             headers = {
                 "Sessionid": sess,
                 "User-Agent": UA,
