@@ -40,7 +40,7 @@ async def duaa_login(student_id):
             res = await client.get(LOGIN_URL, params=params, headers={"User-Agent": UA}, timeout=10)
             data = res.json()
             if data.get("STATUS") == "0":
-                return data["result"]["id"], data["result"]["sessionId"], data["result"].get("userName", "未知姓名")
+                return data["result"]["id"], data["result"]["Sessionid"], data["result"].get("userName", "未知姓名")
             else:
                 print(f"DEBUG: iclass 业务逻辑失败，返回: {data}")
         except Exception as e:
