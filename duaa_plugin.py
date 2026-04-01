@@ -114,13 +114,10 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
     elif action == "签到":
         if len(sub_cmd) < 2: await duaa_cmd.finish("请指定序号")
         try:
-            # 找到序号，可能是 /duaa 签到 1 或 /duaa 签到 1 -su
             idx = int(sub_cmd[1]) - 1
         except: await duaa_cmd.finish("序号无效")
         
-        # 模式：超级用户模式 (-su) 可绕过时间限制
         force_mode = "-su" in sub_cmd
-        
         sched = user_data.get("today_schedule", [])
         if not sched or idx < 0 or idx >= len(sched):
             await duaa_cmd.finish("请先发送 [/duaa 课表] 刷新最新序号")
@@ -131,37 +128,35 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
         if target_course.get("signStatus") == "1":
             await duaa_cmd.finish("你已经签到过了哦")
 
-        # --- 2. “时间卫士”逻辑 ---
+        # --- 2. “时间卫士”逻辑 (修复：确保 finish 不被 catch) ---
         if not force_mode:
+            valid_start = valid_end = None
             try:
                 now = datetime.now()
                 fmt = "%Y-%m-%d %H:%M:%S"
                 begin_t = datetime.strptime(target_course["classBeginTime"], fmt)
                 end_t = datetime.strptime(target_course["classEndTime"], fmt)
-                
-                # 合法：上课前10分钟 到 下课前1分钟
                 valid_start = begin_t - timedelta(minutes=10)
                 valid_end = end_t - timedelta(minutes=1)
-                
-                if now < valid_start:
-                    await duaa_cmd.finish(
-                        f"⏰ 还没到时候呢！\n《{target_course['courseName']}》的有效窗口为：\n{valid_start.strftime('%H:%M')} ~ {valid_end.strftime('%H:%M')}\n(如需强制开启请加参数 -su)"
-                    )
-                if now > valid_end:
-                    await duaa_cmd.finish(f"🚫 太晚啦！签到窗口已关闭。")
             except Exception as e:
                 print(f"DEBUG: 时间解析故障: {e}")
+            
+            # 将 finish 移出 try 块
+            if valid_start and now < valid_start:
+                await duaa_cmd.finish(
+                    f"⏰ 还没到时候呢！\n《{target_course['courseName']}》的有效窗口为：\n{valid_start.strftime('%H:%M')} ~ {valid_end.strftime('%H:%M')}\n(如需强制开启请加参数 -su)"
+                )
+            if valid_end and now > valid_end:
+                await duaa_cmd.finish(f"🚫 太晚啦！签到窗口已关闭。")
 
         # --- 3. 执行物理签到请求 ---
         sched_id = target_course["id"]
         course_name = target_course["courseName"]
-        
         sid = user_data["student_id"]
         uid, sess, _ = await duaa_login(sid)
         if not uid or not sess:
             await duaa_cmd.finish("❌ 签到失败：无法建立校内连接")
         
-        # 时间戳 + 36000 偏移量保持和原脚本一致
         ts = int(datetime.now().timestamp() * 1000) + 36000
         async with httpx.AsyncClient(verify=False) as client:
             headers = {
