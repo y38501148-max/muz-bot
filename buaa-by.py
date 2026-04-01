@@ -3,63 +3,69 @@ from datetime import datetime
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Message, MessageEvent
 from nonebot.params import CommandArg
-from .boya_utils import BoyaClient  # 确保 boya_utils.py 在同一目录下
+from .boya_utils import BoyaClient
 
-# ==================== 预设账号配置 ====================
-DEFAULT_SID = ""
-DEFAULT_PWD = ""
-# ====================================================
+# 配置路径
+CONFIG_PATH = Path("data/boya/by.txt")
+
+def get_credentials():
+    """从本地文件读取账号密码"""
+    if not CONFIG_PATH.exists():
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # 如果文件不存在，可以先创建一个空的示例
+        CONFIG_PATH.write_text("学号:密码", encoding="utf-8")
+        return None, None
+    
+    try:
+        content = CONFIG_PATH.read_text(encoding="utf-8").strip()
+        if ":" in content:
+            sid, pwd = content.split(":", 1)
+            return sid.strip(), pwd.strip()
+    except:
+        pass
+    return None, None
 
 by_cmd = on_command("by", priority=5, block=True)
 
 @by_cmd.handle()
 async def handle_boya(event: MessageEvent, args: Message = CommandArg()):
-    # 解析指令 (其实现在只需要输入 /by 即可直接触发列表)
     sub_cmd = args.extract_plain_text().strip().split()
-    
-    # 默认直接执行列表拉取
     action = sub_cmd[0] if sub_cmd else "列表"
 
     if action == "列表":
-        # 1. 初始化客户端
-        client = BoyaClient(DEFAULT_SID, DEFAULT_PWD)
-        
-        # 2. 拉取数据 (内部会自动尝试 SSO 登录)
+        # 1. 获取账号密码
+        sid, pwd = get_credentials()
+        if not sid or not pwd or sid == "学号":
+            await by_cmd.finish(f"❌ 未检测到配置。请在项目根目录的 {CONFIG_PATH} 中写入 [学号:密码] 后重试。")
+
+        # 2. 初始化并拉取
+        client = BoyaClient(sid, pwd)
         data = await client.get_course_list()
         
         if not data or data.get("status") != "0":
-            await by_cmd.finish("❌ 博雅数据获取失败，通常是 SSO 登录验证码或账号异常。")
+            await by_cmd.finish("❌ 博雅数据获取失败，请确认 by.txt 中的账号密码是否正确。")
 
         courses = data.get("data", {}).get("content", [])
         now = datetime.now()
         fmt = "%Y-%m-%d %H:%M:%S"
         
-        selectable_courses = []  # 分类1：有余位
-        upcoming_courses = []    # 分类2：即将开始
+        selectable_courses = []
+        upcoming_courses = []
 
         for c in courses:
             try:
-                sel_start_str = c.get("courseSelectStartDate")
-                sel_end_str = c.get("courseSelectEndDate")
-                if not sel_start_str or not sel_end_str: continue
-                
-                sel_start_dt = datetime.strptime(sel_start_str, fmt)
-                sel_end_dt = datetime.strptime(sel_end_str, fmt)
-                
-                current = c.get("courseCurrentCount", 0)
-                total = c.get("courseMaxCount", 0)
-                has_slots = current < total
+                sel_start_dt = datetime.strptime(c['courseSelectStartDate'], fmt)
+                sel_end_dt = datetime.strptime(c['courseSelectEndDate'], fmt)
+                current, total = c.get("courseCurrentCount", 0), c.get("courseMaxCount", 0)
 
                 if sel_start_dt > now:
                     upcoming_courses.append(c)
-                elif sel_start_dt <= now <= sel_end_dt and has_slots:
+                elif sel_start_dt <= now <= sel_end_dt and current < total:
                     selectable_courses.append(c)
-            except:
-                continue
+            except: continue
 
-        # 3. 构造 QQ 消息
-        msg = f"📊 全校博雅扫描报告 (实时监测中)\n"
-        
+        # 3. 构造消息
+        msg = f"📊 全校博雅实时监测报告\n"
         if selectable_courses:
             msg += "\n✨ 【当前有余位，建议抢课】"
             for c in selectable_courses:
