@@ -20,7 +20,7 @@ def load_messages():
     "签到成功，好运值+1!",
     "让我们永远在一起吧！"
     ]
-        MES_FILE.write_text("\n".join(DEF_MESSAGES), encoding=utf-8)
+        MES_FILE.write_text("\n".join(DEF_MESSAGES), encoding="utf-8")
         return DEF_MESSAGES
     with open(MES_FILE, "r", encoding="utf-8") as f:
         lines = [line.strip() for line in f if line.strip()]
@@ -91,7 +91,7 @@ rank_cmd = on_command("积分榜", priority=5, block=True)
 async def handle_rank(event: MessageEvent):
     all_users = []
     for file in DATA_DIR.glob("*.json"):
-        with open(file, "r", encoding=utf-8) as f:
+        with open(file, "r", encoding="utf-8") as f:
             data = json.load(f)
             all_users.append((file.stem, data["points"]))
     
