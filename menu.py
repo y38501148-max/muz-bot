@@ -32,7 +32,7 @@ async def handle_help(args: Message = CommandArg()):
     if not plugin_name:
         VERSION = 0.2
         help_msg = (
-        f"🤖 欢迎使用 muz-bot v{VERSION}\n"
+        f"🤖 欢迎使用 muz-bot -v{VERSION}\n"
             "=====================\n"
             "请输入 [/help plugin_name] 获取详细说明：\n"
         "👉 cf  : Codeforces相关\n"
