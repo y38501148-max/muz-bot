@@ -58,6 +58,13 @@ async def handle_boya(event: MessageEvent, args: Message = CommandArg()):
 
         for c in courses:
             try:
+                # 获取地点信息
+                place = c.get("coursePosition") or c.get("roomName") or ""
+                
+                # 🛡️ 屏蔽规则：屏蔽沙河校区的课程
+                if "沙河" in place:
+                    continue
+
                 sel_start_dt = datetime.strptime(c['courseSelectStartDate'], fmt)
                 sel_end_dt = datetime.strptime(c['courseSelectEndDate'], fmt)
                 course_start_dt = datetime.strptime(c['courseStartDate'], fmt)
@@ -75,25 +82,21 @@ async def handle_boya(event: MessageEvent, args: Message = CommandArg()):
                 continue
 
         # 4. 构造消息推送
-        msg = f"📊 北航博雅·实时动态报告\n"
+        msg = f"📊 北航博雅·实时动态报告 (已过滤沙河)\n"
         
         if selectable_courses:
             msg += "\n✨ 【有余位，速抢】"
             for c in selectable_courses:
                 left = c['courseMaxCount'] - c['courseCurrentCount']
                 kind = c.get("courseNewKind2", {}).get("kindName", "互动")
-                # 提取地点 (兼容不同字段名)
                 place = c.get("coursePosition") or c.get("roomName") or "待定"
-                
                 msg += f"\n- {c['courseName']}\n  🔥 剩余:{left} | 类别:{kind}\n  📍 地点:{place}"
         
         if upcoming_courses:
             msg += "\n\n🚀 【即将开启选课预告】"
             for c in upcoming_courses:
                 kind = c.get("courseNewKind2", {}).get("kindName", "互动")
-                # 预告也加上地点，方便提前规划
                 place = c.get("coursePosition") or c.get("roomName") or "待定"
-                
                 msg += f"\n- {c['courseName']}\n  ⏳ 开启:{c['courseSelectStartDate'][5:16]} | 类别:{kind}\n  📍 地点:{place}"
         
         if not selectable_courses and not upcoming_courses:
