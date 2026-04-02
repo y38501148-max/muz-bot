@@ -107,6 +107,16 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             msg += f"\n[{i}] 📖 {c['courseName']}\n    📍 {room}\n    ⏰ {c['classBeginTime'][-8:-3]} | {status}"
         await duaa_cmd.finish(msg)
 
+    elif action == "解绑":
+        if len(sub_cmd) < 2: await duaa_cmd.finish("请输入要解绑的 ID")
+        alias = sub_cmd[1]
+        if alias not in accounts: await duaa_cmd.finish(f"❌ 找不到 ID 为 {alias} 的账号")
+        
+        info = accounts.pop(alias)
+        data["accounts"] = accounts
+        save_user_data(qq_id, data)
+        await duaa_cmd.finish(f"🗑️ 已成功解绑账号：{info['real_name']} ({alias})")
+
     elif action == "签到":
         # 解析参数：/duaa 签到 [ID] [序号] [-su]
         if len(sub_cmd) < 3: await duaa_cmd.finish("用法：/duaa 签到 [ID] [序号] [-su]")

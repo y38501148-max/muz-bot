@@ -25,9 +25,10 @@ HELP_DB = {
     ),
     "duaa": (
         "🚀 Duaa 助手\n",
-        "1️⃣ /duaa 绑定 [学号] [id]\n"
-        "2️⃣ /duaa 课表 [id]\n",
-        "3️⃣ /duaa 签到 [id] [序号] [-su]\n"
+        "1️⃣ /duaa 绑定 [学号] [ID]\n",
+        "2️⃣ /duaa 课表 [ID]\n",
+        "3️⃣ /duaa 签到 [ID] [序号] [-su]\n",
+        "4️⃣ /duaa 解绑 [ID]\n"
     ),
     "by": (
         "博雅查询:\n",
