@@ -163,11 +163,14 @@ async def handle_boya(event: MessageEvent, args: Message = CommandArg()):
                     selectable.append(c)
             except: continue
 
+        # 将所有的结果合起来缓存，这样两者都可以被「标记」
+        all_results = selectable + upcoming
         data = load_reminders()
-        data["last_results"] = upcoming 
+        data["last_results"] = all_results 
         save_reminders(data)
 
         msg = f"📊 北航博雅报告 (已过滤沙河)\n"
+        idx = 1
         if selectable:
             msg += "\n✨ 【有余位，速抢】"
             for c in selectable:
@@ -175,18 +178,23 @@ async def handle_boya(event: MessageEvent, args: Message = CommandArg()):
                 kind = c.get("courseNewKind2", {}).get("kindName", "未知")
                 s_start = c['courseSelectStartDate'][5:16]
                 c_start = c['courseStartDate'][5:16]
-                msg += f"\n- {c['courseName']}\n  🔥 剩余:{left} | 类别:{kind}\n  🚀 选课:{s_start} | ⏰ 上课:{c_start}\n  📍 地点:{c.get('coursePosition') or '待定'}"
+                msg += f"\n[{idx}] {c['courseName']}\n  🔥 剩余:{left} | 类别:{kind}\n  🚀 选课:{s_start} | ⏰ 上课:{c_start}\n  📍 地点:{c.get('coursePosition') or '待定'}"
+                idx += 1
         
         if upcoming:
-            msg += "\n\n🚀 【选课预告】(输入 /by 标记 [序号] 订阅)"
-            for i, c in enumerate(upcoming, 1):
+            msg += "\n\n🚀 【选课预告】"
+            for c in upcoming:
                 kind = c.get("courseNewKind2", {}).get("kindName", "未知")
                 s_start = c['courseSelectStartDate'][5:16]
                 c_start = c['courseStartDate'][5:16]
-                msg += f"\n[{i}] {c['courseName']}\n  📌 类别:{kind}\n  🚀 选课:{s_start} | ⏰ 上课:{c_start}\n  📍 地点:{c.get('coursePosition') or '待定'}"
+                msg += f"\n[{idx}] {c['courseName']}\n  📌 类别:{kind}\n  🚀 选课:{s_start} | ⏰ 上课:{c_start}\n  📍 地点:{c.get('coursePosition') or '待定'}"
+                idx += 1
         
         if not selectable and not upcoming:
             msg += "\n📅 当前没有合适的博雅课程 (均已开课或无余位)"
+        else:
+            msg += "\n\n💡 回复 /by 标记 [序号] 即可订阅提醒"
+            
         await by_cmd.finish(msg)
 
     elif action == "标记":
@@ -195,12 +203,23 @@ async def handle_boya(event: MessageEvent, args: Message = CommandArg()):
         if len(sub_cmd) < 2: await by_cmd.finish("请输入：/by 标记 [序号]")
         try: idx = int(sub_cmd[1]) - 1
         except: await by_cmd.finish("序号无效")
+        
         data = load_reminders()
         last_results = data.get("last_results", [])
         if not last_results or idx < 0 or idx >= len(last_results):
-            await by_cmd.finish("请先发送 [/by] 刷新列表。信号。")
+            await by_cmd.finish("请先发送 [/by] 刷新列表后再进行操作。")
+        
         target = last_results[idx]
         cid, group_id = str(target['id']), str(event.group_id)
+        
+        # 检查是否过期
+        fmt = "%Y-%m-%d %H:%M:%S"
+        s_start_dt = datetime.strptime(target['courseSelectStartDate'], fmt)
+        now = datetime.now(TZ_BEIJING).replace(tzinfo=None)
+        
+        if s_start_dt <= now:
+            await by_cmd.finish(f"⚠️ 课程《{target['courseName']}》已经开始选课了，请直接前往抢课，无需标记。")
+
         monitored = data.setdefault("monitored", {})
         if cid not in monitored:
             monitored[cid] = {"name": target['courseName'], "start_time": target['courseSelectStartDate'], "notified": False, "subscribers": []}
@@ -210,7 +229,8 @@ async def handle_boya(event: MessageEvent, args: Message = CommandArg()):
             save_reminders(data)
             await by_cmd.finish(f"✅ 标记成功！\n课程：{target['courseName']}\n将在选课前 3 分钟在群内 @ 你。")
         else:
-            await by_cmd.finish("已经标记过啦！")
+            await by_cmd.finish("你已经标记过这门课啦！")
+            
     elif action == "重置":
         save_reminders({"monitored": {}, "last_results": []})
         await by_cmd.finish("🗑️ 数据库已清空")
