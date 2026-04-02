@@ -11,25 +11,29 @@ BASE_DATA_DIR = Path("data/duaa")
 USER_DIR = BASE_DATA_DIR / "users"
 USER_DIR.mkdir(parents=True, exist_ok=True)
 
-# BUAA iclass API 地址
 LOGIN_URL = "https://iclass.buaa.edu.cn:8347/app/user/login.action"
 SCHEDULE_URL = "https://iclass.buaa.edu.cn:8347/app/course/get_stu_course_sched.action"
 CHECKIN_URL = "http://iclass.buaa.edu.cn:8081/app/course/stu_scan_sign.action"
-
 UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ3A.230901.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/116.0.0.0 Mobile Safari/537.36"
 
-# 2. 单个用户文件操作
-def get_user_file(qq_id):
-    return USER_DIR / f"{qq_id}.json"
-
+# 2. 数据处理与迁移
 def load_user_data(qq_id):
-    file_path = get_user_file(qq_id)
-    if file_path.exists():
-        return json.loads(file_path.read_text(encoding="utf-8"))
-    return {}
+    file_path = USER_DIR / f"{qq_id}.json"
+    if not file_path.exists(): return {"accounts": {}}
+    
+    data = json.loads(file_path.read_text(encoding="utf-8"))
+    
+    # 迁移逻辑：如果发现是旧格式，自动转为 ID 为 "本人" 的多账号格式
+    if "student_id" in data and "accounts" not in data:
+        old_sid = data.pop("student_id")
+        old_name = data.pop("real_name", "本人")
+        data["accounts"] = {old_name: {"student_id": old_sid, "real_name": old_name}}
+        save_user_data(qq_id, data)
+    
+    return data
 
 def save_user_data(qq_id, data):
-    file_path = get_user_file(qq_id)
+    file_path = USER_DIR / f"{qq_id}.json"
     file_path.write_text(json.dumps(data, ensure_ascii=False, indent=4), encoding="utf-8")
 
 # 3. 核心 API
@@ -38,34 +42,22 @@ async def duaa_login(student_id):
         params = {"phone": student_id, "password": "", "verificationType": "2", "userLevel": "1"}
         try:
             res = await client.get(LOGIN_URL, params=params, headers={"User-Agent": UA}, timeout=10)
-            data = res.json()
-            if data.get("STATUS") == "0":
-                results = data.get("result", {})
+            json_data = res.json()
+            if json_data.get("STATUS") == "0":
+                results = json_data.get("result", {})
                 return results.get("id"), results.get("sessionId"), results.get("userName", "未知姓名")
-            else:
-                print(f"DEBUG: iclass 登录业务失败，返回: {data}")
-        except Exception as e:
-            print(f"DEBUG: iclass 登录网络请求异常: {str(e)}")
+        except: pass
     return None, None, None
 
 async def get_schedule(user_id, session_id):
     date_str = datetime.now().strftime("%Y%m%d")
     async with httpx.AsyncClient(verify=False) as client:
         try:
-            res = await client.get(
-                SCHEDULE_URL, 
-                params={"id": user_id, "dateStr": date_str},
-                headers={"Sessionid": session_id, "User-Agent": UA}, 
-                timeout=10
-            )
-            data = res.json()
-            if data.get("STATUS") == "0":
-                return data.get("result", [])
-            else:
-                print(f"DEBUG: 课表查询业务失败，返回：{data}")
-        except Exception as e:
-            print(f"DEBUG: 课表查询网络异常：{str(e)}")
-    return []
+            res = await client.get(SCHEDULE_URL, params={"id": user_id, "dateStr": date_str},
+                                 headers={"Sessionid": session_id, "User-Agent": UA}, timeout=10)
+            json_data = res.json()
+            return json_data.get("result", []) if json_data.get("STATUS") == "0" else []
+        except: return []
 
 # 4. 指令处理器
 duaa_cmd = on_command("duaa", priority=5, block=True)
@@ -74,109 +66,83 @@ duaa_cmd = on_command("duaa", priority=5, block=True)
 async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
     sub_cmd = args.extract_plain_text().strip().split()
     if not sub_cmd:
-        await duaa_cmd.finish("🚀 Duaa 助手：\n/duaa 绑定 [学号]\n/duaa 课表\n/duaa 签到 [序号] [-su]")
+        await duaa_cmd.finish("🚀 Duaa 助手：\n/duaa 绑定 [学号] [ID]\n/duaa 课表 [ID]\n/duaa 签到 [ID] [序号] [-su]")
     
     action = sub_cmd[0]
     qq_id = str(event.get_user_id())
-    user_data = load_user_data(qq_id)
+    data = load_user_data(qq_id)
+    accounts = data.get("accounts", {})
 
     if action == "绑定":
-        if len(sub_cmd) < 2: await duaa_cmd.finish("请输入学号")
-        sid = sub_cmd[1]
+        if len(sub_cmd) < 3: await duaa_cmd.finish("请输入：/duaa 绑定 [学号] [自定义ID]")
+        sid, alias = sub_cmd[1], sub_cmd[2]
         uid, sess, real_name = await duaa_login(sid)
-        if not uid or not sess: 
-            await duaa_cmd.finish("❌ 绑定失败，可能服务器连不上校内网或学号错误")
+        if not uid or not sess: await duaa_cmd.finish("❌ 登录失败，请检查学号或网络")
         
-        user_data["student_id"] = sid
-        user_data["real_name"] = real_name
-        save_user_data(qq_id, user_data)
-        await duaa_cmd.finish(f"✅ 绑定成功！\n姓名：{real_name}\n学号：{sid}")
+        accounts[alias] = {"student_id": sid, "real_name": real_name}
+        data["accounts"] = accounts
+        save_user_data(qq_id, data)
+        await duaa_cmd.finish(f"✅ 绑定成功！\nID：{alias}\n姓名：{real_name}\n学号：{sid}")
 
     elif action == "课表":
-        if "student_id" not in user_data: await duaa_cmd.finish("请先绑定学号")
-        sid = user_data["student_id"]
-        uid, sess, _ = await duaa_login(sid)
-        if not uid or not sess: 
-            await duaa_cmd.finish("❌ 登录失效，服务器无法访问 iclass")
+        # 确定使用哪个账号
+        alias = sub_cmd[1] if len(sub_cmd) > 1 else (list(accounts.keys())[0] if len(accounts) == 1 else None)
+        if not alias or alias not in accounts:
+            await duaa_cmd.finish(f"❓ 请指定预览哪个账号的课表。\n当前可选 ID：{', '.join(accounts.keys())}")
+        
+        acc = accounts[alias]
+        uid, sess, _ = await duaa_login(acc['student_id'])
+        if not uid or not sess: await duaa_cmd.finish("❌ 登录失效")
         
         sched = await get_schedule(uid, sess)
-        user_data["today_schedule"] = sched
-        save_user_data(qq_id, user_data)
+        acc["today_schedule"] = sched # 更新该账号的缓存课表
+        save_user_data(qq_id, data)
 
-        if not sched: await duaa_cmd.finish("📅 今日你目前暂无课程")
+        if not sched: await duaa_cmd.finish(f"📅 {acc['real_name']} 今日无课")
         
-        msg = f"📅 {user_data.get('real_name', '同学')} 的今日课表:\n"
+        msg = f"📅 {acc['real_name']} ({alias}) 的今日课表:\n"
         for i, c in enumerate(sched, 1):
             status = "✅已签" if c.get("signStatus") == "1" else "⏳未签"
-            # 尝试提取教室信息 (常用字段名包括 roomName, classroomName, placeName)
             room = c.get("roomName") or c.get("classroomName") or c.get("placeName") or "未知地点"
-            
             msg += f"\n[{i}] 📖 {c['courseName']}\n    📍 {room}\n    ⏰ {c['classBeginTime'][-8:-3]} | {status}"
         await duaa_cmd.finish(msg)
 
     elif action == "签到":
-        if len(sub_cmd) < 2: await duaa_cmd.finish("请指定序号")
+        # 解析参数：/duaa 签到 [ID] [序号] [-su]
+        if len(sub_cmd) < 3: await duaa_cmd.finish("用法：/duaa 签到 [ID] [序号] [-su]")
+        alias, idx_str = sub_cmd[1], sub_cmd[2]
+        
+        if alias not in accounts: await duaa_cmd.finish(f"❌ 找不到 ID 为 {alias} 的账号")
+        acc = accounts[alias]
+        
         try:
-            idx = int(sub_cmd[1]) - 1
+            idx = int(idx_str) - 1
         except: await duaa_cmd.finish("序号无效")
         
         force_mode = "-su" in sub_cmd
-        sched = user_data.get("today_schedule", [])
+        sched = acc.get("today_schedule", [])
         if not sched or idx < 0 or idx >= len(sched):
-            await duaa_cmd.finish("请先发送 [/duaa 课表] 刷新最新序号")
+            await duaa_cmd.finish(f"请先发送 [/duaa 课表 {alias}] 刷新序号")
         
-        target_course = sched[idx]
-        
-        # --- 1. “重复签到”检查 ---
-        if target_course.get("signStatus") == "1":
-            await duaa_cmd.finish("你已经签到过了哦")
+        target = sched[idx]
+        if target.get("signStatus") == "1": await duaa_cmd.finish("已经签过啦")
 
-        # --- 2. “时间卫士”逻辑 (修复：确保 finish 不被 catch) ---
+        # 时间检查
         if not force_mode:
-            valid_start = valid_end = None
-            try:
-                now = datetime.now()
-                fmt = "%Y-%m-%d %H:%M:%S"
-                begin_t = datetime.strptime(target_course["classBeginTime"], fmt)
-                end_t = datetime.strptime(target_course["classEndTime"], fmt)
-                valid_start = begin_t - timedelta(minutes=10)
-                valid_end = end_t - timedelta(minutes=1)
-            except Exception as e:
-                print(f"DEBUG: 时间解析故障: {e}")
-            
-            # 将 finish 移出 try 块
-            if valid_start and now < valid_start:
-                await duaa_cmd.finish(
-                    f"⏰ 还没到时候呢！\n《{target_course['courseName']}》的有效窗口为：\n{valid_start.strftime('%H:%M')} ~ {valid_end.strftime('%H:%M')}\n(如需强制开启请加参数 -su)"
-                )
-            if valid_end and now > valid_end:
-                await duaa_cmd.finish(f"🚫 太晚啦！签到窗口已关闭。")
+            now = datetime.now()
+            fmt = "%Y-%m-%d %H:%M:%S"
+            begin_t = datetime.strptime(target["classBeginTime"], fmt)
+            end_t = datetime.strptime(target["classEndTime"], fmt)
+            if now < begin_t - timedelta(minutes=10): await duaa_cmd.finish("⏰ 还没到时候")
+            if now > end_t - timedelta(minutes=1): await duaa_cmd.finish("🚫 窗口已关闭")
 
-        # --- 3. 执行物理签到请求 ---
-        sched_id = target_course["id"]
-        course_name = target_course["courseName"]
-        sid = user_data["student_id"]
-        uid, sess, _ = await duaa_login(sid)
-        if not uid or not sess:
-            await duaa_cmd.finish("❌ 签到失败：无法建立校内连接")
-        
+        # 执行请求
+        uid, sess, _ = await duaa_login(acc['student_id'])
         ts = int(datetime.now().timestamp() * 1000) + 36000
         async with httpx.AsyncClient(verify=False) as client:
-            headers = {
-                "Sessionid": sess,
-                "User-Agent": UA,
-                "Content-Type": "application/x-www-form-urlencoded"
-            }
-            res = await client.post(
-                CHECKIN_URL,
-                params={"id": uid, "courseSchedId": sched_id, "timestamp": ts},
-                headers=headers
-            )
-            res_data = res.json()
-            if res_data.get("STATUS") == "0":
-                await duaa_cmd.finish(f"🎯 《{course_name}》 签到成功！" + (" (强制模式)" if force_mode else ""))
+            res = await client.post(CHECKIN_URL, params={"id": uid, "courseSchedId": target["id"], "timestamp": ts},
+                                 headers={"Sessionid": sess, "User-Agent": UA})
+            if res.json().get("STATUS") == "0":
+                await duaa_cmd.finish(f"🎯 {acc['real_name']} - 《{target['courseName']}》签到成功！")
             else:
-                await duaa_cmd.finish(f"❌ 签到失败：{res_data.get('ERRMSG', '未知原因')}")
-
-    else:
-        await duaa_cmd.finish("未知的子指令")
+                await duaa_cmd.finish(f"❌ 失败：{res.json().get('ERRMSG', '未知')}")
