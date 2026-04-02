@@ -144,7 +144,7 @@ async def handle_boya(event: MessageEvent, args: Message = CommandArg()):
         client = BoyaClient(sid, pwd)
         res = await client.get_course_list()
         if not res or res.get("status") != "0":
-            await by_cmd.finish("❌ 获取失败，请检查账号并确认服务器网络通畅。")
+            await by_cmd.finish("❌ 获取失败，请确认服务器网络通畅。")
 
         courses = res.get("data", {}).get("content", [])
         now = datetime.now(TZ_BEIJING).replace(tzinfo=None)
@@ -173,8 +173,9 @@ async def handle_boya(event: MessageEvent, args: Message = CommandArg()):
             for c in selectable:
                 left = c['courseMaxCount'] - c['courseCurrentCount']
                 kind = c.get("courseNewKind2", {}).get("kindName", "未知")
+                s_start = c['courseSelectStartDate'][5:16]
                 c_start = c['courseStartDate'][5:16]
-                msg += f"\n- {c['courseName']}\n  🔥 剩余:{left} | 类别:{kind}\n  ⏰ 上课:{c_start} | 📍:{c.get('coursePosition') or '待定'}"
+                msg += f"\n- {c['courseName']}\n  🔥 剩余:{left} | 类别:{kind}\n  🚀 选课:{s_start} | ⏰ 上课:{c_start}\n  📍 地点:{c.get('coursePosition') or '待定'}"
         
         if upcoming:
             msg += "\n\n🚀 【选课预告】(输入 /by 标记 [序号] 订阅)"
@@ -182,7 +183,7 @@ async def handle_boya(event: MessageEvent, args: Message = CommandArg()):
                 kind = c.get("courseNewKind2", {}).get("kindName", "未知")
                 s_start = c['courseSelectStartDate'][5:16]
                 c_start = c['courseStartDate'][5:16]
-                msg += f"\n[{i}] {c['courseName']}\n  📌 类别:{kind} | ⏰ 上课:{c_start}\n  🚀 选课:{s_start} | 📍:{c.get('coursePosition') or '待定'}"
+                msg += f"\n[{i}] {c['courseName']}\n  📌 类别:{kind}\n  🚀 选课:{s_start} | ⏰ 上课:{c_start}\n  📍 地点:{c.get('coursePosition') or '待定'}"
         
         if not selectable and not upcoming:
             msg += "\n📅 当前没有合适的博雅课程 (均已开课或无余位)"
@@ -197,7 +198,7 @@ async def handle_boya(event: MessageEvent, args: Message = CommandArg()):
         data = load_reminders()
         last_results = data.get("last_results", [])
         if not last_results or idx < 0 or idx >= len(last_results):
-            await by_cmd.finish("请先发送 [/by] 刷新列表。")
+            await by_cmd.finish("请先发送 [/by] 刷新列表。信号。")
         target = last_results[idx]
         cid, group_id = str(target['id']), str(event.group_id)
         monitored = data.setdefault("monitored", {})
