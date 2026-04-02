@@ -1,13 +1,12 @@
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Message, MessageEvent
 from nonebot.params import CommandArg
-from boya_utils import BoyaClient  # 确保与 boya_utils.py 在同一目录下
+from boya_utils import BoyaClient
 
 # ==================== 配置强制绝对路径 ====================
-# 无论是在本地还是云端运行，都会锁定在插件所在目录下的 data/boya/by.txt
 CONFIG_PATH = Path(__file__).parent / "data" / "boya" / "by.txt"
 
 def get_credentials():
@@ -45,62 +44,61 @@ async def handle_boya(event: MessageEvent, args: Message = CommandArg()):
         data = await client.get_course_list()
         
         if not data or data.get("status") != "0":
-            await by_cmd.finish("❌ 博雅获取失败，请确认 by.txt 里的账号密码并确认校网通畅。")
+            await by_cmd.finish("❌ 博雅获取失败，请确认 by.txt 里的账号密码并确认服务器网络通畅。")
 
-        # 3. 核心解析与过滤
+        # 3. 时间与过滤逻辑 (强制使用北京时间对比)
         courses = data.get("data", {}).get("content", [])
-        now = datetime.now()
+        
+        tz_beijing = timezone(timedelta(hours=8))
+        now = datetime.now(tz_beijing).replace(tzinfo=None)
         fmt = "%Y-%m-%d %H:%M:%S"
         
-        selectable_courses = []  # 情况1：捡漏中
-        upcoming_courses = []    # 情况2：预告中
+        selectable_courses = []
+        upcoming_courses = []
 
         for c in courses:
             try:
-                # 转换各阶段时刻
                 sel_start_dt = datetime.strptime(c['courseSelectStartDate'], fmt)
                 sel_end_dt = datetime.strptime(c['courseSelectEndDate'], fmt)
                 course_start_dt = datetime.strptime(c['courseStartDate'], fmt)
                 
-                # 提取状态
-                current = c.get("courseCurrentCount", 0)
-                total = c.get("courseMaxCount", 0)
-                
-                # --- 过滤器 ---
-                # A. 绝对过滤：如果课程已经开始上课，直接跳过
+                # 过滤器：如果已经开课，直接无视
                 if course_start_dt < now:
                     continue
                 
-                # B. 情况一：选课还没开始的 (预告)
+                # 分类
                 if sel_start_dt > now:
                     upcoming_courses.append(c)
-                
-                # C. 情况二：选课进行中 + 有余位 + 还在选课期 (捡漏位)
-                elif sel_start_dt <= now <= sel_end_dt and current < total:
+                elif sel_start_dt <= now <= sel_end_dt and c.get("courseCurrentCount", 0) < c.get("courseMaxCount", 0):
                     selectable_courses.append(c)
             except:
                 continue
 
         # 4. 构造消息推送
-        msg = f"📊 北航博雅·实时动态报告 (扫描前50门)\n"
+        msg = f"📊 北航博雅·实时动态报告\n"
         
         if selectable_courses:
-            msg += "\n✨ 【当前有余位，建议速抢】"
+            msg += "\n✨ 【有余位，速抢】"
             for c in selectable_courses:
                 left = c['courseMaxCount'] - c['courseCurrentCount']
                 kind = c.get("courseNewKind2", {}).get("kindName", "互动")
-                start = c.get("courseStartDate", "待定")[5:16] # 04-01 19:00
-                msg += f"\n- {c['courseName']}\n  🔥 剩余:{left} | 类别:{kind} | ⏰:{start}\n  📍 教室:{c.get('coursePosition') or '待定'}"
+                # 提取地点 (兼容不同字段名)
+                place = c.get("coursePosition") or c.get("roomName") or "待定"
+                
+                msg += f"\n- {c['courseName']}\n  🔥 剩余:{left} | 类别:{kind}\n  📍 地点:{place}"
         
         if upcoming_courses:
             msg += "\n\n🚀 【即将开启选课预告】"
             for c in upcoming_courses:
                 kind = c.get("courseNewKind2", {}).get("kindName", "互动")
-                msg += f"\n- {c['courseName']}\n  ⏳ 开启:{c['courseSelectStartDate'][5:16]} | 类别:{kind}"
+                # 预告也加上地点，方便提前规划
+                place = c.get("coursePosition") or c.get("roomName") or "待定"
+                
+                msg += f"\n- {c['courseName']}\n  ⏳ 开启:{c['courseSelectStartDate'][5:16]} | 类别:{kind}\n  📍 地点:{place}"
         
         if not selectable_courses and not upcoming_courses:
-            msg += "\n📅 暂无推荐课程 (请过后再来)"
+            msg += "\n📅 当前没有合适的博雅课程 (均已开课或无余位)"
             
         await by_cmd.finish(msg)
     else:
-        await by_cmd.finish("❓ 未知指令，直接发送 /by 即可查询。")
+        await by_cmd.finish("❓ 未知指令，直接发送 /by 即可查询列表。")
