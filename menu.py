@@ -33,6 +33,8 @@ HELP_DB = {
     "by": (
         "博雅查询:\n",
         "/by 查询可用的博雅课程\n" 
+        "/by 标记 [序号] 标记一门博雅课程\n"
+        "/by 重置 清空所有标记\n"
     )
 }
 
@@ -41,7 +43,7 @@ async def handle_help(args: Message = CommandArg()):
     plugin_name = args.extract_plain_text().strip().lower()
 
     if not plugin_name:
-        VERSION = 0.2
+        VERSION = 0.3
         help_msg = (
         f"🤖 欢迎使用 muz-bot -v{VERSION}\n"
             "=====================\n"
