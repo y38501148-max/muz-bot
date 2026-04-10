@@ -10,6 +10,7 @@ from nonebot.params import CommandArg
 # 1. 路径配置
 BASE_DATA_DIR = Path("data/duaa")
 USER_DIR = BASE_DATA_DIR / "users"
+CONFIG_FILE = BASE_DATA_DIR / "config.json"
 USER_DIR.mkdir(parents=True, exist_ok=True)
 
 SSO_LOGIN_URL = "https://d.buaa.edu.cn/https/77726476706e69737468656265737421e3e44ed225256951300d8db9d6562d/login"
@@ -35,7 +36,7 @@ def get_network_urls(use_vpn, port="8347"):
             "scan_sign": "http://iclass.buaa.edu.cn:8081/app/course/stu_scan_sign.action"
         }
 
-# 2. 数据处理与迁移
+# 2. 数据处理与配置管理
 def load_user_data(qq_id):
     file_path = USER_DIR / f"{qq_id}.json"
     if not file_path.exists(): return {"accounts": {}}
@@ -50,6 +51,16 @@ def load_user_data(qq_id):
 def save_user_data(qq_id, data):
     file_path = USER_DIR / f"{qq_id}.json"
     file_path.write_text(json.dumps(data, ensure_ascii=False, indent=4), encoding="utf-8")
+
+def get_shared_vpn():
+    if not CONFIG_FILE.exists(): return None, None
+    try:
+        cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        return cfg.get("vpn_username"), cfg.get("vpn_password")
+    except: return None, None
+
+def set_shared_vpn(username, password):
+    CONFIG_FILE.write_text(json.dumps({"vpn_username": username, "vpn_password": password}), encoding="utf-8")
 
 # 3. 核心 API
 async def fetch_execution(client: httpx.AsyncClient):
@@ -84,57 +95,60 @@ async def sso_login(client: httpx.AsyncClient, username, password):
         raise ValueError("建立 VPN 隧道失败")
     raise ValueError("SSO 登录失败（账号/密码错误或隧道异常）")
 
-async def perform_duaa_login(student_id, password=None):
-    use_vpn = bool(password)
+async def perform_duaa_login(target_student_id, personal_password=None):
+    # 确定用于 VPN 的凭据优先级：用户自带 > 全局共享
+    vpn_user, vpn_pass = None, None
+    if personal_password:
+        vpn_user, vpn_pass = target_student_id, personal_password
+    else:
+        vpn_user, vpn_pass = get_shared_vpn()
+
+    use_vpn = bool(vpn_pass)
     async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
         if use_vpn:
-            await sso_login(client, student_id, password)
+            logger.info(f"正在通过 VPN 账号 {vpn_user} 为 {target_student_id} 穿透隧道...")
+            await sso_login(client, vpn_user, vpn_pass)
             urls = get_network_urls(True)
-            res = await client.get(urls["user_login"], params={"phone": student_id, "password": "", "verificationType": "2", "userLevel": "1"}, headers={"User-Agent": UA}, timeout=10)
+            res = await client.get(urls["user_login"], params={"phone": target_student_id, "password": "", "verificationType": "2", "userLevel": "1"}, headers={"User-Agent": UA}, timeout=10)
             res.raise_for_status()
             json_data = res.json()
             if json_data.get("STATUS") == "0":
                 results = json_data.get("result", {})
                 return results.get("id"), results.get("sessionId"), results.get("userName", "未知姓名"), dict(client.cookies)
-            raise Exception(json_data.get("ERRMSG", "VPN 登录状态异常"))
+            raise Exception(json_data.get("ERRMSG", "VPN 环境下教务登录失败"))
         else:
             last_err = None
             for port in PORTS:
                 try:
                     urls = get_network_urls(False, port)
-                    res = await client.get(urls["user_login"], params={"phone": student_id, "password": "", "verificationType": "2", "userLevel": "1"}, headers={"User-Agent": UA}, timeout=10)
+                    res = await client.get(urls["user_login"], params={"phone": target_student_id, "password": "", "verificationType": "2", "userLevel": "1"}, headers={"User-Agent": UA}, timeout=10)
                     res.raise_for_status()
                     json_data = res.json()
                     if json_data.get("STATUS") == "0":
                         results = json_data.get("result", {})
                         return results.get("id"), results.get("sessionId"), results.get("userName", "未知姓名"), dict(client.cookies)
-                    raise Exception(json_data.get("ERRMSG", "登录状态异常"))
+                    raise Exception(json_data.get("ERRMSG", "直连登录失败"))
                 except Exception as e:
-                    last_err = e
-                    continue
-            raise Exception(f"直连登录失败, 所有端口尝试完毕: {last_err}")
+                    last_err = e; continue
+            raise Exception(f"所有连接尝试均失败: {last_err}。若在校外，请配置全局账号或提供密码。")
 
 async def call_api(use_vpn, session_id, cookies, path_key, params, is_post=False):
-    # 如果是直连，自动双端口重试
     ports_to_try = ["8347"] if use_vpn else PORTS
     last_err = None
-    
     async with httpx.AsyncClient(verify=False, follow_redirects=True, cookies=cookies or {}) as client:
         for port in ports_to_try:
             urls = get_network_urls(use_vpn, port)
-            req_url = urls[path_key]
             try:
                 headers = {"Sessionid": session_id, "User-Agent": UA}
                 if is_post:
-                    res = await client.post(req_url, params=params, headers=headers, timeout=10)
+                    res = await client.post(urls[path_key], params=params, headers=headers, timeout=10)
                 else:
-                    res = await client.get(req_url, params=params, headers=headers, timeout=10)
+                    res = await client.get(urls[path_key], params=params, headers=headers, timeout=10)
                 res.raise_for_status()
                 return res.json()
             except Exception as e:
-                last_err = e
-                continue
-        raise Exception(f"请求失败 ({path_key}): {last_err}")
+                last_err = e; continue
+        raise Exception(f"接口请求失败: {last_err}")
 
 # 4. 指令处理器
 duaa_cmd = on_command("duaa", priority=5, block=True)
@@ -143,15 +157,20 @@ duaa_cmd = on_command("duaa", priority=5, block=True)
 async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
     sub_cmd = args.extract_plain_text().strip().split()
     if not sub_cmd:
-        await duaa_cmd.finish("🚀 Duaa 助手：\n/duaa 绑定 [学号] [ID] [密码（选填，用于校外）]\n/duaa 课表 [ID]\n/duaa 签到 [ID] [序号] [-su]")
+        await duaa_cmd.finish("🚀 Duaa 助手：\n/duaa 绑定 [学号] [ID] [可选密码]\n/duaa 课表 [ID]\n/duaa 签到 [ID] [序号] [-su]\n/duaa 全局账号 [学号] [密码]")
     
     action = sub_cmd[0]
     qq_id = str(event.get_user_id())
     data = load_user_data(qq_id)
     accounts = data.get("accounts", {})
 
-    if action == "绑定":
-        if len(sub_cmd) < 3: await duaa_cmd.finish("请输入：/duaa 绑定 [学号] [自定义ID] [密码（外网使用需提供）]")
+    if action == "全局账号":
+        if len(sub_cmd) < 3: await duaa_cmd.finish("用法：/duaa 全局账号 [学号] [密码]")
+        set_shared_vpn(sub_cmd[1], sub_cmd[2])
+        await duaa_cmd.finish("✅ 全局共享 SSO 凭借设置成功！")
+
+    elif action == "绑定":
+        if len(sub_cmd) < 3: await duaa_cmd.finish("请输入：/duaa 绑定 [学号] [自定义ID] [密码（选填）]")
         sid, alias = sub_cmd[1], sub_cmd[2]
         password = sub_cmd[3] if len(sub_cmd) > 3 else None
         try:
@@ -162,34 +181,25 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
         accounts[alias] = {"student_id": sid, "password": password, "real_name": real_name, "cookies": cookies}
         data["accounts"] = accounts
         save_user_data(qq_id, data)
-        mode = "VPN (校外自动)" if password else "直连 (校内专线)"
-        await duaa_cmd.finish(f"✅ 绑定成功！\n网络模式：{mode}\nID：{alias}\n姓名：{real_name}\n学号：{sid}")
+        await duaa_cmd.finish(f"✅ 绑定成功！\nID：{alias}\n姓名：{real_name}\n学号：{sid}")
 
     elif action == "课表":
         alias = sub_cmd[1] if len(sub_cmd) > 1 else (list(accounts.keys())[0] if len(accounts) == 1 else None)
         if not alias or alias not in accounts:
-            await duaa_cmd.finish(f"❓ 请指定预览哪个账号的课表。\n当前可选 ID：{', '.join(accounts.keys())}")
+            await duaa_cmd.finish(f"❓ 请指定预览哪个账号的课表。")
         
         acc = accounts[alias]
-        date_str = datetime.now().strftime("%Y%m%d")
-        
-        async def fetch_sched():
-            uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
-            acc["cookies"] = cookies
-            json_data = await call_api(bool(acc.get('password')), sess, cookies, "course_schedule", {"id": uid, "dateStr": date_str})
-            if json_data.get("STATUS") == "0": return json_data.get("result", [])
-            raise Exception(json_data.get("ERRMSG", "获取异常"))
-            
         try:
-            sched = await fetch_sched()
+            uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
+            json_data = await call_api(bool(get_shared_vpn()[1] or acc.get('password')), sess, cookies, "course_schedule", {"id": uid, "dateStr": datetime.now().strftime("%Y%m%d")})
+            if json_data.get("STATUS") != "0": raise Exception(json_data.get("ERRMSG", "获取失败"))
+            sched = json_data.get("result", [])
+            acc["today_schedule"] = sched
+            save_user_data(qq_id, data)
         except Exception as e:
             await duaa_cmd.finish(f"❌ 课表刷新失败: {e}")
-            
-        acc["today_schedule"] = sched
-        save_user_data(qq_id, data)
 
         if not sched: await duaa_cmd.finish(f"📅 {acc['real_name']} 今日无课")
-        
         msg = f"📅 {acc['real_name']} ({alias}) 的今日课表:\n"
         for i, c in enumerate(sched, 1):
             status = "✅已签" if str(c.get("signStatus")) == "1" else "⏳未签"
@@ -200,53 +210,33 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
     elif action == "解绑":
         if len(sub_cmd) < 2: await duaa_cmd.finish("请输入要解绑的 ID")
         alias = sub_cmd[1]
-        if alias not in accounts: await duaa_cmd.finish(f"❌ 找不到 ID 为 {alias} 的账号")
+        if alias not in accounts: await duaa_cmd.finish(f"❌ 找不到 ID 为 {alias}")
         info = accounts.pop(alias)
         data["accounts"] = accounts
         save_user_data(qq_id, data)
-        await duaa_cmd.finish(f"🗑️ 已成功解绑账号：{info['real_name']} ({alias})")
+        await duaa_cmd.finish(f"🗑️ 已成功解绑：{info['real_name']}")
 
     elif action == "签到":
         if len(sub_cmd) < 3: await duaa_cmd.finish("用法：/duaa 签到 [ID] [序号] [-su]")
         alias, idx_str = sub_cmd[1], sub_cmd[2]
-        
-        if alias not in accounts: await duaa_cmd.finish(f"❌ 找不到 ID 为 {alias} 的账号")
+        if alias not in accounts: await duaa_cmd.finish(f"❌ 找不到账号 {alias}")
         acc = accounts[alias]
-        
         try: idx = int(idx_str) - 1
         except: await duaa_cmd.finish("序号无效")
         
-        force_mode = "-su" in sub_cmd
         sched = acc.get("today_schedule", [])
-        if not sched or idx < 0 or idx >= len(sched): await duaa_cmd.finish(f"请先发送 [/duaa 课表 {alias}] 刷新序号")
-        
+        if not sched or idx < 0 or idx >= len(sched): await duaa_cmd.finish("请先刷新课表")
         target = sched[idx]
         if str(target.get("signStatus")) == "1": await duaa_cmd.finish("已经签过啦")
 
-        if not force_mode:
-            now = datetime.now()
-            fmt = "%Y-%m-%d %H:%M:%S"
-            begin_t = datetime.strptime(target["classBeginTime"], fmt)
-            end_t = datetime.strptime(target["classEndTime"], fmt)
-            if now < begin_t - timedelta(minutes=10): await duaa_cmd.finish("⏰ 还没到时候")
-            if now > end_t - timedelta(minutes=1): await duaa_cmd.finish("🚫 窗口已关闭")
-
         try:
             uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
-            acc["cookies"] = cookies
-            save_user_data(qq_id, data)
-            
             ts = int(datetime.now().timestamp() * 1000) + 36000
-            json_data = await call_api(bool(acc.get('password')), sess, cookies, "scan_sign", {"id": uid, "courseSchedId": target["id"], "timestamp": ts}, is_post=True)
-            
+            json_data = await call_api(bool(get_shared_vpn()[1] or acc.get('password')), sess, cookies, "scan_sign", {"id": uid, "courseSchedId": target["id"], "timestamp": ts}, is_post=True)
             status_val = str(json_data.get("STATUS", json_data.get("status", "-1")))
             if status_val == "0":
                 await duaa_cmd.finish(f"🎯 {acc['real_name']} - 《{target['courseName']}》签到成功！")
             else:
-                err_msg = json_data.get('ERRMSG', json_data.get('ERRORMSG', '未知'))
-                if "已签到" in err_msg:
-                    await duaa_cmd.finish(f"🎯 {acc['real_name']} - 《{target['courseName']}》已签过到。")
-                else:
-                    await duaa_cmd.finish(f"❌ 失败：{err_msg}")
+                await duaa_cmd.finish(f"❌ 失败：{json_data.get('ERRMSG', '未知')}")
         except Exception as e:
             await duaa_cmd.finish(f"❌ 请求失败: {e}")
