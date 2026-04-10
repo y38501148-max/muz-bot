@@ -142,13 +142,6 @@ async def sso_login(client: httpx.AsyncClient, username, password):
     if msg_match: error_msg = msg_match.group(1).strip()
     
     raise ValueError(f"SSO 穿透失败。最终停留地址: {final_url}, 提示: {error_msg}")
-    
-    # 提取页面上的具体报错（如果还在 SSO 页面）
-    error_msg = "未知错误"
-    msg_match = re.search(r'class="msg.*?>(.*?)<', login_res.text, re.S)
-    if msg_match: error_msg = msg_match.group(1).strip()
-    
-    raise ValueError(f"SSO 穿透失败。最终停留地址: {final_url}, 提示: {error_msg}")
 
 async def perform_duaa_login(target_student_id, personal_password=None):
     vpn_user, vpn_pass = (target_student_id, personal_password) if personal_password else get_shared_vpn()
@@ -232,8 +225,11 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             uid, sess, real_name, cookies = await perform_duaa_login(sid, password)
             accounts[alias] = {"student_id": sid, "password": password, "real_name": real_name, "cookies": cookies}
             data["accounts"] = accounts; save_user_data(qq_id, data)
-            await duaa_cmd.finish(f"✅ 绑定成功：{real_name} ({sid})")
-        except Exception as e: await duaa_cmd.finish(str(e))
+            # 【修复】使用 send 发送消息，使用 return 优雅退出
+            await duaa_cmd.send(f"✅ 绑定成功：{real_name} ({sid})")
+            return
+        except Exception as e: 
+            await duaa_cmd.finish(str(e))
 
     elif action == "课表":
         alias = sub_cmd[1] if len(sub_cmd) > 1 else (list(accounts.keys())[0] if len(accounts) == 1 else None)
@@ -246,14 +242,22 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             if res.get("STATUS") != "0": raise Exception(res.get("ERRMSG", "接口返回错误"))
             sched = res.get("result", [])
             acc["today_schedule"] = sched; save_user_data(qq_id, data)
-            if not sched: await duaa_cmd.finish(f"📅 {acc['real_name']} 今日无课")
+            if not sched: 
+                # 【修复】
+                await duaa_cmd.send(f"📅 {acc['real_name']} 今日无课")
+                return
+            
             msg = f"📅 {acc['real_name']} 的今日课表:\n"
             for i, c in enumerate(sched, 1):
                 status = "✅已签" if str(c.get("signStatus")) == "1" else "⏳未签"
                 room = c.get("roomName") or c.get("classroomName") or "未知"
                 msg += f"\n[{i}] 📖 {c['courseName']}\n    📍 {room} | {status}"
-            await duaa_cmd.finish(msg)
-        except Exception as e: await duaa_cmd.finish(f"❌ 查课表失败: {e}")
+            
+            # 【修复】
+            await duaa_cmd.send(msg)
+            return
+        except Exception as e: 
+            await duaa_cmd.finish(f"❌ 查课表失败: {e}")
 
     elif action == "签到":
         if len(sub_cmd) < 3: await duaa_cmd.finish("用法：/duaa 签到 [ID] [序号]")
@@ -268,9 +272,15 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             has_vpn = bool(acc.get('password') or get_shared_vpn()[1])
             res = await call_api(has_vpn, sess, cookies, "scan_sign", {"id": uid, "courseSchedId": target["id"], "timestamp": ts}, is_post=True)
             status = str(res.get("STATUS", res.get("status", "-1")))
-            if status == "0": await duaa_cmd.finish(f"🎯 《{target['courseName']}》签到成功！")
-            else: await duaa_cmd.finish(f"❌ 失败：{res.get('ERRMSG', '未知')}")
-        except Exception as e: await duaa_cmd.finish(f"❌ 签到发生错误: {e}")
+            
+            # 【修复】
+            if status == "0": 
+                await duaa_cmd.send(f"🎯 《{target['courseName']}》签到成功！")
+            else: 
+                await duaa_cmd.send(f"❌ 失败：{res.get('ERRMSG', '未知')}")
+            return
+        except Exception as e: 
+            await duaa_cmd.finish(f"❌ 签到发生错误: {e}")
 
     elif action == "解绑":
         if len(sub_cmd) < 2: await duaa_cmd.finish("请输入要解绑的 ID")
@@ -278,4 +288,5 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
         if alias in accounts:
             info = accounts.pop(alias); data["accounts"] = accounts; save_user_data(qq_id, data)
             await duaa_cmd.finish(f"🗑️ 已成功解绑：{info['real_name']}")
-        else: await duaa_cmd.finish("❌ 找不到该 ID")
+        else: 
+            await duaa_cmd.finish("❌ 找不到该 ID")
