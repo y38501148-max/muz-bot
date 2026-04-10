@@ -1,6 +1,7 @@
 import httpx
 import json
 import re
+import random
 from datetime import datetime, timedelta
 from pathlib import Path
 from nonebot import on_command, logger, require, get_bots
@@ -102,6 +103,7 @@ async def sso_login(client: httpx.AsyncClient, username, password):
         raise Exception(f"SSO 登录过程网络异常: {e}")
 
     final_url = str(login_res.url)
+    
     if login_res.status_code == 401 or "密码错误" in login_res.text:
         raise ValueError("SSO 认证失败：学号或密码错误，或触发了前端加密校验。")
     
@@ -112,13 +114,15 @@ async def sso_login(client: httpx.AsyncClient, username, password):
         probe_urls = get_network_urls(True, "8347")
         try:
             probe_res = await client.get(probe_urls["service_home"] + "/", timeout=8)
-            logger.info(f"VPN 隧道预热完成，状态码: {probe_res.status_code}")
-        except: pass
+            logger.info(f"VPN 隧道嗅探预热完成，状态码: {probe_res.status_code}")
+        except Exception as e:
+            logger.warning(f"隧道打通但嗅探预热异常: {e}")
         return True
     
     error_msg = "未知错误"
     msg_match = re.search(r'class="msg.*?>(.*?)<', login_res.text, re.S)
     if msg_match: error_msg = msg_match.group(1).strip()
+    
     raise ValueError(f"SSO 穿透失败。最终停留地址: {final_url}, 提示: {error_msg}")
 
 async def perform_duaa_login(target_student_id, personal_password=None):
@@ -127,7 +131,9 @@ async def perform_duaa_login(target_student_id, personal_password=None):
     
     async with httpx.AsyncClient(verify=False, follow_redirects=True, headers={"User-Agent": UA}) as client:
         if use_vpn:
+            logger.info(f"使用凭据 {vpn_user} 尝试 SSO 穿透...")
             await sso_login(client, vpn_user, vpn_pass)
+            
             last_err = None
             for port in PORTS:
                 try:
@@ -140,7 +146,7 @@ async def perform_duaa_login(target_student_id, personal_password=None):
                         return results.get("id"), results.get("sessionId"), results.get("userName", "未知姓名"), dict(client.cookies)
                 except Exception as e:
                     last_err = e; continue
-            raise Exception(f"VPN 隧道已打通，但无法登录教务: {last_err}")
+            raise Exception(f"VPN 隧道已打通，但无法通过隧道登录教务: {last_err}")
         else:
             last_err = None
             for port in PORTS:
@@ -154,7 +160,7 @@ async def perform_duaa_login(target_student_id, personal_password=None):
                         return results.get("id"), results.get("sessionId"), results.get("userName", "未知姓名"), dict(client.cookies)
                 except Exception as e:
                     last_err = e; continue
-            raise Exception(f"直连失败: {last_err}")
+            raise Exception(f"直连失败: {last_err} (外网用户请提供密码或配置全局账号)")
 
 async def call_api(use_vpn, session_id, cookies, path_key, params, is_post=False):
     ports_to_try = PORTS
@@ -165,6 +171,7 @@ async def call_api(use_vpn, session_id, cookies, path_key, params, is_post=False
             try:
                 headers = {"Sessionid": session_id, "User-Agent": UA}
                 if is_post:
+                    # 参照 Rust 版本，签到接口虽然是 POST，但参数放在 URL Query 里
                     res = await client.post(urls[path_key], params=params, headers=headers, timeout=10)
                 else:
                     res = await client.get(urls[path_key], params=params, headers=headers, timeout=10)
@@ -182,7 +189,7 @@ duaa_cmd = on_command("duaa", priority=5, block=True)
 async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
     sub_cmd = args.extract_plain_text().strip().split()
     if not sub_cmd:
-        await duaa_cmd.finish("🚀 Duaa 助手：\n/duaa 绑定 [学号] [ID] [可选密码]\n/duaa 课表 [ID]\n/duaa 签到 [ID] [序号] [-su]\n/duaa 开启提醒\n/duaa 全局账号 [学号] [密码]")
+        await duaa_cmd.finish("🚀 Duaa 助手：\n/duaa 绑定 [学号] [ID] [可选密码]\n/duaa 课表 [ID]\n/duaa 签到 [ID] [序号] [-su]\n/duaa 开启自动签到\n/duaa 全局账号 [学号] [密码]")
     
     action, qq_id = sub_cmd[0], str(event.get_user_id())
     data = load_user_data(qq_id); accounts = data.get("accounts", {})
@@ -191,15 +198,12 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
         if len(sub_cmd) < 3: await duaa_cmd.finish("用法：/duaa 全局账号 [学号] [密码]")
         set_shared_vpn(sub_cmd[1], sub_cmd[2]); await duaa_cmd.finish("✅ 全局共享凭据更新成功。")
 
-    elif action == "开启提醒":
-        # 获取当前群聊的 ID
+    elif action == "开启自动签到":
         group_id = getattr(event, "group_id", None)
-        if not group_id:
-            await duaa_cmd.send("⚠️ 请在你想收到提醒的【群聊】中使用此指令！私聊无效哦。")
-            return
+        if not group_id: await duaa_cmd.finish("⚠️ 请在你想开启自动签到的【群聊】中使用此指令！私聊无效。")
         data["notify_group"] = group_id
         save_user_data(qq_id, data)
-        await duaa_cmd.send("✅ 已开启上课提醒！\n以后每天早上7点会自动同步你的课表，并在每节课【课前10分钟】在此群 @你 提醒签到。")
+        await duaa_cmd.send("✅ 自动签到已开启！\n每天 7:00 自动同步课表并分配【上课前1-10分钟】的随机签到点。\n签到成功后会在此群 @你。")
         return
 
     elif action == "绑定":
@@ -227,7 +231,7 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             
             sched = res.get("result", [])
             acc["today_schedule"] = sched
-            acc["schedule_date"] = date_str # 记录获取课表的日期，供自动提醒使用
+            acc["schedule_date"] = date_str  # 记录日期供定时任务对比
             save_user_data(qq_id, data)
             
             if not sched: 
@@ -247,13 +251,17 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
 
     elif action == "签到":
         if len(sub_cmd) < 3: await duaa_cmd.finish("用法：/duaa 签到 [ID] [序号] [-su]")
+        
         alias, idx_str = sub_cmd[1], sub_cmd[2]
-        is_su = "-su" in sub_cmd
+        is_su = "-su" in sub_cmd  
         
         if alias not in accounts: await duaa_cmd.finish("❓ 未找到账号")
         acc = accounts[alias]
-        try: idx = int(idx_str) - 1
-        except: await duaa_cmd.finish("❌ 序号必须是数字")
+        
+        try:
+            idx = int(idx_str) - 1
+        except ValueError:
+            await duaa_cmd.finish("❌ 序号必须是数字")
             
         sched = acc.get("today_schedule", [])
         if not sched or idx < 0 or idx >= len(sched): 
@@ -261,15 +269,17 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             
         target = sched[idx]
 
+        # 本地时间校验逻辑 (普通模式下防手滑)
         if not is_su:
             now = datetime.now()
             begin_str = target.get("classBeginTime", "")
             end_str = target.get("classEndTime", "")
+            
             try:
                 def parse_dt(t_str, default_hour):
                     if not t_str: return now.replace(hour=default_hour, minute=0, second=0)
                     t_str = t_str.split(" ")[-1] 
-                    if len(t_str) == 5: t_str += ":00"
+                    if len(t_str) == 5: t_str += ":00" 
                     dt = datetime.strptime(t_str, "%H:%M:%S")
                     return now.replace(hour=dt.hour, minute=dt.minute, second=dt.second, microsecond=0)
 
@@ -283,7 +293,7 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
                     await duaa_cmd.send(
                         f"⚠️ 拦截：当前不在《{target['courseName']}》的正常签到时间内！\n"
                         f"允许时段：{valid_start.strftime('%H:%M')} ~ {valid_end.strftime('%H:%M')}\n"
-                        f"💡 如需强制签到，请加上 -su 参数"
+                        f"💡 如需强制签到，请加上 -su 参数，例如：\n/duaa 签到 {alias} {idx_str} -su"
                     )
                     return
             except Exception as e:
@@ -291,15 +301,21 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
 
         try:
             uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
+            # 【核心修正】根据 Rust 源码，时间戳减去 10 秒以绕过服务器防超前机制
             ts_str = str(int(datetime.now().timestamp() * 1000) - 10000)
             has_vpn = bool(acc.get('password') or get_shared_vpn()[1])
+            
             payload = {"id": uid, "courseSchedId": target["id"], "timestamp": ts_str}
+            
             res = await call_api(has_vpn, sess, cookies, "scan_sign", payload, is_post=True)
             status = str(res.get("STATUS", res.get("status", "-1")))
             
             if status == "0": 
                 su_tip = " (☢️强制模式)" if is_su else ""
                 await duaa_cmd.send(f"🎯 《{target['courseName']}》签到成功！{su_tip}")
+                # 同步更新本地状态，防止后续定时任务重复签到
+                target["signStatus"] = "1"
+                save_user_data(qq_id, data)
             else: 
                 await duaa_cmd.send(f"❌ 失败：{res.get('ERRMSG', '未知')}")
             return
@@ -310,57 +326,69 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
         if len(sub_cmd) < 2: await duaa_cmd.finish("请输入要解绑的 ID")
         alias = sub_cmd[1]
         if alias in accounts:
-            info = accounts.pop(alias); data["accounts"] = accounts; save_user_data(qq_id, data)
+            info = accounts.pop(alias)
+            data["accounts"] = accounts
+            save_user_data(qq_id, data)
             await duaa_cmd.finish(f"🗑️ 已成功解绑：{info['real_name']}")
         else: 
             await duaa_cmd.finish("❌ 找不到该 ID")
 
 
 # ==========================================
-# 5. 定时任务模块：自动拉取与群内提醒
+# 5. 自动签到定时任务模块
 # ==========================================
 
-@scheduler.scheduled_job("cron", hour=7, minute=0, id="duaa_auto_fetch_schedules")
-async def fetch_all_schedules():
-    """每天早上 7:00 自动帮开启了提醒的用户拉取最新课表"""
-    logger.info("开始执行自动获取今日课表任务...")
-    date_str = datetime.now().strftime("%Y%m%d")
+@scheduler.scheduled_job("cron", hour=7, minute=0, id="duaa_daily_sync")
+async def daily_sync():
+    """每天早上 7:00 自动拉取课表并为未签课程计算随机自动签到时间"""
+    logger.info("开始执行每日课表自动同步与随机时间分配...")
+    today_str = datetime.now().strftime("%Y%m%d")
     
     for file in USER_DIR.glob("*.json"):
         qq_id = file.stem
         data = load_user_data(qq_id)
         if "notify_group" not in data: 
-            continue # 没开启提醒的用户不刷，节省服务器资源
-        
-        accounts = data.get("accounts", {})
+            continue # 未开启自动签到的用户跳过
+            
         changed = False
-        for alias, acc in accounts.items():
+        for alias, acc in data.get("accounts", {}).items():
             try:
                 uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
                 has_vpn = bool(acc.get('password') or get_shared_vpn()[1])
-                res = await call_api(has_vpn, sess, cookies, "course_schedule", {"id": uid, "dateStr": date_str})
+                res = await call_api(has_vpn, sess, cookies, "course_schedule", {"id": uid, "dateStr": today_str})
                 
                 if res.get("STATUS") == "0":
-                    acc["today_schedule"] = res.get("result", [])
-                    acc["schedule_date"] = date_str  # 更新拉取日期标志
+                    sched = res.get("result", [])
+                    # 为每门课分配随机打卡时间
+                    for course in sched:
+                        begin_str = course.get("classBeginTime", "")
+                        if begin_str:
+                            t_str = begin_str.split(" ")[-1]
+                            if len(t_str) >= 5:
+                                begin_dt = datetime.strptime(t_str[:5], "%H:%M")
+                                # 生成 1 到 10 分钟的随机提前量
+                                random_offset = random.randint(1, 10)
+                                sign_time = (begin_dt - timedelta(minutes=random_offset)).strftime("%H:%M")
+                                course["auto_sign_hm"] = sign_time
+                                
+                    acc["today_schedule"] = sched
+                    acc["schedule_date"] = today_str 
                     changed = True
             except Exception as e:
                 logger.warning(f"自动更新课表失败 (QQ:{qq_id} ID:{alias}): {e}")
-        
+                
         if changed:
             save_user_data(qq_id, data)
 
-@scheduler.scheduled_job("cron", minute="*", id="duaa_class_reminder")
-async def class_reminder():
-    """每分钟执行一次，嗅探十分钟后即将开始的课程并发送提醒"""
+@scheduler.scheduled_job("cron", minute="*", id="duaa_auto_checkin_executor")
+async def auto_checkin_executor():
+    """每分钟执行一次，嗅探并执行到点的自动签到任务"""
     bots = get_bots()
     if not bots: return
-    bot = list(bots.values())[0]  # 获取当前 Nonebot 实例
+    bot = list(bots.values())[0] 
     
-    now = datetime.now()
-    target_time = now + timedelta(minutes=10)
-    target_hm = target_time.strftime("%H:%M") # 例如 14:00
-    today_date_str = now.strftime("%Y%m%d")
+    now_hm = datetime.now().strftime("%H:%M")
+    today_str = datetime.now().strftime("%Y%m%d")
     
     for file in USER_DIR.glob("*.json"):
         qq_id = file.stem
@@ -368,41 +396,38 @@ async def class_reminder():
         group_id = data.get("notify_group")
         if not group_id: continue
         
-        accounts = data.get("accounts", {})
-        for alias, acc in accounts.items():
-            # 只有日期匹配的最新课表才参与计算，防止用昨天的课表乱提醒
-            if acc.get("schedule_date") != today_date_str:
-                continue
+        changed = False
+        for alias, acc in data.get("accounts", {}).items():
+            # 只有日期对得上才执行，防止用旧课表
+            if acc.get("schedule_date") != today_str: continue
             
-            sched = acc.get("today_schedule", [])
-            for i, c in enumerate(sched, 1):
-                # 如果这门课已经签过到了，就不打扰用户了
-                if str(c.get("signStatus")) == "1":
-                    continue
-                    
-                begin_str = c.get("classBeginTime", "")
-                if not begin_str: continue
-                
-                # 提取出时分，例如 08:00
-                t_str = begin_str.split(" ")[-1]
-                if len(t_str) >= 5: t_str = t_str[:5]
-                
-                # 当课程时间的时分 == (当前时间+10分钟) 的时分
-                if t_str == target_hm:
-                    course_name = c.get("courseName", "未知课程")
-                    room = c.get("roomName") or c.get("classroomName") or "未知"
-                    
-                    # 组装带 @ 的 CQ 码消息
-                    msg = (
-                        f"[CQ:at,qq={qq_id}] ⏰ 上课提醒！\n"
-                        f"账号 [{alias}] 有一节课将在 10 分钟后开始：\n"
-                        f"📖 《{course_name}》\n"
-                        f"📍 {room}\n"
-                        f"💡 签到通道随时可能开启，请准备使用指令：\n"
-                        f"/duaa 签到 {alias} {i}"
-                    )
+            for course in acc.get("today_schedule", []):
+                # 触发条件：到了随机分配的时间点 且 未签到 且 没被打上处理过标签
+                if course.get("auto_sign_hm") == now_hm and str(course.get("signStatus")) != "1" and not course.get("auto_signed"):
+                    logger.info(f"触发自动签到: {alias} -> {course.get('courseName')}")
+                    course["auto_signed"] = True # 无论成功与否，这一分钟内不再重复请求
+                    changed = True
                     
                     try:
+                        uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
+                        # 时间戳规避
+                        ts_str = str(int(datetime.now().timestamp() * 1000) - 10000)
+                        has_vpn = bool(acc.get('password') or get_shared_vpn()[1])
+                        
+                        payload = {"id": uid, "courseSchedId": course["id"], "timestamp": ts_str}
+                        res = await call_api(has_vpn, sess, cookies, "scan_sign", payload, is_post=True)
+                        status = str(res.get("STATUS", res.get("status", "-1")))
+                        
+                        course_name = course.get("courseName", "未知课程")
+                        
+                        if status == "0":
+                            course["signStatus"] = "1"
+                            msg = f"[CQ:at,qq={qq_id}] 🤖 自动签到成功！\n账号：[{alias}]\n课程：《{course_name}》\n（系统已在课前随机时间内为您完成代签）"
+                        else:
+                            msg = f"[CQ:at,qq={qq_id}] ⚠️ 自动签到被拒\n账号：[{alias}]\n课程：《{course_name}》\n原因：{res.get('ERRMSG', '不在签到开放期/二维码失效')}\n建议等老师放出二维码后手动发送指令：\n/duaa 签到 {alias}"
+                            
                         await bot.send_group_msg(group_id=group_id, message=msg)
                     except Exception as e:
-                        logger.error(f"向群 {group_id} 发送上课提醒失败: {e}")
+                        logger.error(f"自动签到执行异常: {e}")
+                        
+        if changed: save_user_data(qq_id, data)
