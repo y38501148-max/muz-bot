@@ -22,8 +22,6 @@ PORTS = ["8347", "8346"]
 
 def get_network_urls(use_vpn, port="8347"):
     if use_vpn:
-        # 基于端口动态构建 WebVPN 代理地址
-        # 形式通常为 https://d.buaa.edu.cn/https-端口/777...
         port_suffix = f"-{port}" if port != "443" else ""
         base = f"https://d.buaa.edu.cn/https{port_suffix}/{VPN_SERVICE_ID}"
         return {
@@ -70,32 +68,20 @@ def set_shared_vpn(username, password):
 # 3. 核心 API
 
 async def sso_login(client: httpx.AsyncClient, username, password):
-    """
-    修复后的 SSO 登录逻辑：
-    先访问 WebVPN 入口，跟随重定向到真实的 SSO，提取真实 execution，
-    最后将表单提交到真实的 SSO 地址，并跟随重定向带回 VPN Cookie。
-    """
     vpn_entry_url = "https://d.buaa.edu.cn/login"
-    
     try:
-        # 1. 访问 WebVPN 登录入口，触发重定向，获取真实的 SSO 登录页 URL
         res = await client.get(vpn_entry_url, timeout=10)
         res.raise_for_status()
-        
-        # 记录此时真正的 SSO 页面地址（也是我们 POST 的目标地址）
         real_sso_url = str(res.url)
         
-        # 2. 从真实的页面中提取防伪造令牌 execution
         execution_match = re.search(r'name="execution"\s+value="([^"]+)"', res.text)
         if not execution_match:
             raise ValueError("无法在 SSO 页面解析 execution 参数。")
         execution = execution_match.group(1)
 
-        # 3. 组装提交表单，并向真实的 SSO 地址发起 POST 请求
-        # 注意：此处让 follow_redirects=True，CAS 验证成功后会自动 302 跳回 d.buaa.edu.cn
         post_data = {
             "username": username,
-            "password": password,  # ⚠️ 注意看下方说明
+            "password": password,
             "submit": "登录",
             "type": "username_password",
             "execution": execution,
@@ -109,34 +95,26 @@ async def sso_login(client: httpx.AsyncClient, username, password):
             timeout=15,
             follow_redirects=True 
         )
-        
     except Exception as e:
         raise Exception(f"SSO 登录过程网络异常: {e}")
 
     final_url = str(login_res.url)
     
-    # 4. 结果校验
     if login_res.status_code == 401 or "密码错误" in login_res.text:
         raise ValueError("SSO 认证失败：学号或密码错误，或触发了前端加密校验。")
     
-    # 检查是否成功回到了 WebVPN 的域下，或者是否拿到了 Wengine 的核心 Cookie
-    # 拿到 TWINKLE 或 wengine_vpn_ticket 代表隧道打通
     vpn_cookies = [c.name for k, c in client.cookies.jar._cookies.items() for _, c in c.items() for _, c in c.items()]
     is_in_vpn = "d.buaa.edu.cn" in final_url or any("wengine" in name.lower() or "twinkle" in name.lower() for name in vpn_cookies)
 
     if is_in_vpn:
-        # 嗅探探测：仅作为隧道预热，不再作为判定生死的前提
         probe_urls = get_network_urls(True, "8347")
         try:
             probe_res = await client.get(probe_urls["service_home"] + "/", timeout=8)
             logger.info(f"VPN 隧道嗅探预热完成，状态码: {probe_res.status_code}")
         except Exception as e:
             logger.warning(f"隧道打通但嗅探预热异常: {e}")
-            
-        # 只要最终 URL 在 WebVPN 域下，直接认定 SSO 穿透成功！
         return True
     
-    # 如果没进 is_in_vpn，提取页面上的具体报错（比如密码错误）
     error_msg = "未知错误"
     msg_match = re.search(r'class="msg.*?>(.*?)<', login_res.text, re.S)
     if msg_match: error_msg = msg_match.group(1).strip()
@@ -147,13 +125,11 @@ async def perform_duaa_login(target_student_id, personal_password=None):
     vpn_user, vpn_pass = (target_student_id, personal_password) if personal_password else get_shared_vpn()
     use_vpn = bool(vpn_pass)
     
-    # 设置 verify=False 时关闭警告（可选）
     async with httpx.AsyncClient(verify=False, follow_redirects=True, headers={"User-Agent": UA}) as client:
         if use_vpn:
             logger.info(f"使用凭据 {vpn_user} 尝试 SSO 穿透...")
             await sso_login(client, vpn_user, vpn_pass)
             
-            # 隧道已打通，开始请求教务 API
             last_err = None
             for port in PORTS:
                 try:
@@ -168,7 +144,6 @@ async def perform_duaa_login(target_student_id, personal_password=None):
                     last_err = e; continue
             raise Exception(f"VPN 隧道已打通，但无法通过隧道登录教务: {last_err}")
         else:
-            # 直连逻辑不变
             last_err = None
             for port in PORTS:
                 try:
@@ -192,7 +167,8 @@ async def call_api(use_vpn, session_id, cookies, path_key, params, is_post=False
             try:
                 headers = {"Sessionid": session_id, "User-Agent": UA}
                 if is_post:
-                    res = await client.post(urls[path_key], params=params, headers=headers, timeout=10)
+                    # 【核心修复】将 params=params 改为了 data=params，以表单 body 形式提交
+                    res = await client.post(urls[path_key], data=params, headers=headers, timeout=10)
                 else:
                     res = await client.get(urls[path_key], params=params, headers=headers, timeout=10)
                 res.raise_for_status()
@@ -225,7 +201,6 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             uid, sess, real_name, cookies = await perform_duaa_login(sid, password)
             accounts[alias] = {"student_id": sid, "password": password, "real_name": real_name, "cookies": cookies}
             data["accounts"] = accounts; save_user_data(qq_id, data)
-            # 【修复】使用 send 发送消息，使用 return 优雅退出
             await duaa_cmd.send(f"✅ 绑定成功：{real_name} ({sid})")
             return
         except Exception as e: 
@@ -243,7 +218,6 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             sched = res.get("result", [])
             acc["today_schedule"] = sched; save_user_data(qq_id, data)
             if not sched: 
-                # 【修复】
                 await duaa_cmd.send(f"📅 {acc['real_name']} 今日无课")
                 return
             
@@ -253,29 +227,71 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
                 room = c.get("roomName") or c.get("classroomName") or "未知"
                 msg += f"\n[{i}] 📖 {c['courseName']}\n    📍 {room} | {status}"
             
-            # 【修复】
             await duaa_cmd.send(msg)
             return
         except Exception as e: 
             await duaa_cmd.finish(f"❌ 查课表失败: {e}")
 
     elif action == "签到":
-        if len(sub_cmd) < 3: await duaa_cmd.finish("用法：/duaa 签到 [ID] [序号]")
+        if len(sub_cmd) < 3: await duaa_cmd.finish("用法：/duaa 签到 [ID] [序号] [-su]")
+        
         alias, idx_str = sub_cmd[1], sub_cmd[2]
+        is_su = "-su" in sub_cmd  # 提取是否包含超级用户模式参数
+        
         if alias not in accounts: await duaa_cmd.finish("❓ 未找到账号")
-        acc = accounts[alias]; idx, sched = int(idx_str) - 1, acc.get("today_schedule", [])
-        if not sched or idx < 0 or idx >= len(sched): await duaa_cmd.finish("请刷新课表")
+        acc = accounts[alias]
+        
+        try:
+            idx = int(idx_str) - 1
+        except ValueError:
+            await duaa_cmd.finish("❌ 序号必须是数字")
+            
+        sched = acc.get("today_schedule", [])
+        if not sched or idx < 0 or idx >= len(sched): 
+            await duaa_cmd.finish("⚠️ 找不到该课程，请先发送 /duaa 课表 刷新今日课程信息。")
+            
         target = sched[idx]
+
+        # 【新增】本地时间校验逻辑
+        if not is_su:
+            now = datetime.now()
+            begin_str = target.get("classBeginTime", "00:00")
+            end_str = target.get("classEndTime", "23:59")
+            
+            try:
+                # 补全格式以兼容 datetime 解析 (可能为 HH:MM 或 HH:MM:SS)
+                if len(begin_str) == 5: begin_str += ":00"
+                if len(end_str) == 5: end_str += ":00"
+                
+                start_dt = datetime.strptime(begin_str, "%H:%M:%S").replace(year=now.year, month=now.month, day=now.day)
+                end_dt = datetime.strptime(end_str, "%H:%M:%S").replace(year=now.year, month=now.month, day=now.day)
+                
+                # 设定可签到区间：课前10分钟 ~ 下课前1分钟
+                valid_start = start_dt - timedelta(minutes=10)
+                valid_end = end_dt - timedelta(minutes=1)
+                
+                if not (valid_start <= now <= valid_end):
+                    await duaa_cmd.send(
+                        f"⚠️ 拦截：当前不在《{target['courseName']}》的正常签到时间内！\n"
+                        f"允许时段：{valid_start.strftime('%H:%M')} ~ {valid_end.strftime('%H:%M')}\n"
+                        f"💡 如需强制签到，请加上 -su 参数，例如：\n/duaa 签到 {alias} {idx_str} -su"
+                    )
+                    return
+            except Exception as e:
+                logger.warning(f"课表时间解析失败，默认放行。错误信息: {e}")
+
         try:
             uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
+            # 生成时间戳
             ts = int(datetime.now().timestamp() * 1000) + 36000
             has_vpn = bool(acc.get('password') or get_shared_vpn()[1])
+            
             res = await call_api(has_vpn, sess, cookies, "scan_sign", {"id": uid, "courseSchedId": target["id"], "timestamp": ts}, is_post=True)
             status = str(res.get("STATUS", res.get("status", "-1")))
             
-            # 【修复】
             if status == "0": 
-                await duaa_cmd.send(f"🎯 《{target['courseName']}》签到成功！")
+                su_tip = " (☢️强制模式)" if is_su else ""
+                await duaa_cmd.send(f"🎯 《{target['courseName']}》签到成功！{su_tip}")
             else: 
                 await duaa_cmd.send(f"❌ 失败：{res.get('ERRMSG', '未知')}")
             return
