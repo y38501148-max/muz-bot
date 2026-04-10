@@ -68,77 +68,97 @@ def set_shared_vpn(username, password):
     CONFIG_FILE.write_text(json.dumps({"vpn_username": username, "vpn_password": password}), encoding="utf-8")
 
 # 3. 核心 API
-async def fetch_execution(client: httpx.AsyncClient):
-    try:
-        res = await client.get(SSO_LOGIN_URL, timeout=10)
-        res.raise_for_status()
-        match = re.search(r'name="execution"\s+value="([^"]+)"', res.text)
-        if match: return match.group(1)
-        raise ValueError("无法解析 execution 参数。")
-    except Exception as e:
-        raise Exception(f"获取 SSO 页面失败 (请检查机器人服务器能否访问 d.buaa.edu.cn): {e}")
 
 async def sso_login(client: httpx.AsyncClient, username, password):
-    execution = await fetch_execution(client)
+    """
+    修复后的 SSO 登录逻辑：
+    先访问 WebVPN 入口，跟随重定向到真实的 SSO，提取真实 execution，
+    最后将表单提交到真实的 SSO 地址，并跟随重定向带回 VPN Cookie。
+    """
+    vpn_entry_url = "https://d.buaa.edu.cn/login"
+    
     try:
-        res = await client.post(
-            SSO_LOGIN_URL,
-            data={
-                "username": username, "password": password,
-                "submit": "登录", "type": "username_password",
-                "execution": execution, "_eventId": "submit",
-            },
-            headers={"Referer": SSO_LOGIN_URL},
-            timeout=15,
-            follow_redirects=True
-        )
-    except Exception as e:
-        raise Exception(f"SSO 请求超时: {e}")
+        # 1. 访问 WebVPN 登录入口，触发重定向，获取真实的 SSO 登录页 URL
+        res = await client.get(vpn_entry_url, timeout=10)
+        res.raise_for_status()
+        
+        # 记录此时真正的 SSO 页面地址（也是我们 POST 的目标地址）
+        real_sso_url = str(res.url)
+        
+        # 2. 从真实的页面中提取防伪造令牌 execution
+        execution_match = re.search(r'name="execution"\s+value="([^"]+)"', res.text)
+        if not execution_match:
+            raise ValueError("无法在 SSO 页面解析 execution 参数。")
+        execution = execution_match.group(1)
 
-    final_url = str(res.url)
-    if res.status_code == 401:
-        raise ValueError("SSO 认证失败：学号或密码错误。")
+        # 3. 组装提交表单，并向真实的 SSO 地址发起 POST 请求
+        # 注意：此处让 follow_redirects=True，CAS 验证成功后会自动 302 跳回 d.buaa.edu.cn
+        post_data = {
+            "username": username,
+            "password": password,  # ⚠️ 注意看下方说明
+            "submit": "登录",
+            "type": "username_password",
+            "execution": execution,
+            "_eventId": "submit",
+        }
+
+        login_res = await client.post(
+            real_sso_url,
+            data=post_data,
+            headers={"Referer": real_sso_url},
+            timeout=15,
+            follow_redirects=True 
+        )
+        
+    except Exception as e:
+        raise Exception(f"SSO 登录过程网络异常: {e}")
+
+    final_url = str(login_res.url)
     
-    # 只要进入了 d.buaa.edu.cn 且 URL 中包含 iClass 标识，就尝试进行连通性嗅探
-    is_potentially_in = (ICLASS_VPN_ID in final_url or "https-834" in final_url) and "d.buaa.edu.cn" in final_url
+    # 4. 结果校验
+    if login_res.status_code == 401 or "密码错误" in login_res.text:
+        raise ValueError("SSO 认证失败：学号或密码错误，或触发了前端加密校验。")
     
-    if is_potentially_in or "iclass.buaa.edu.cn" in final_url:
-        # 嗅探探测：直接尝试访问 8347 端口的 API 首页
+    # 检查是否成功回到了 WebVPN 的域下，或者是否拿到了 Wengine 的核心 Cookie
+    # 拿到 TWINKLE 或 wengine_vpn_ticket 代表隧道打通
+    vpn_cookies = [c.name for k, c in client.cookies.jar._cookies.items() for _, c in c.items() for _, c in c.items()]
+    is_in_vpn = "d.buaa.edu.cn" in final_url or any("wengine" in name.lower() or "twinkle" in name.lower() for name in vpn_cookies)
+
+    if is_in_vpn:
+        # 嗅探探测：尝试访问 8347 端口的 API 首页
         probe_urls = get_network_urls(True, "8347")
         try:
-            # 无论 final_url 是什么，只要能拉到 iClass API 的响应即视为隧道打通
             probe_res = await client.get(probe_urls["service_home"] + "/", timeout=8)
-            # 如果能访问到 iClass 的页面（包含特定的 JS/CSS 或标题），视为成功
-            if "iclass" in probe_res.text.lower() or probe_res.status_code == 200:
+            if probe_res.status_code == 200:
                 logger.info("VPN 隧道嗅探探测成功！")
                 return True
         except Exception as e:
-            logger.warning(f"隧道嗅探探测中: {e}")
-
-    # 如果此时还在登录页或没有连通，解析具体错误
-    error_msg = "未知错误"
-    msg_match = re.search(r'class="msg.*?>(.*?)<', res.text, re.S)
-    if msg_match: error_msg = msg_match.group(1).strip()
-    elif "密码错误" in res.text: error_msg = "密码错误"
+            logger.warning(f"隧道打通但嗅探异常: {e}")
+            return True # 依然返回 True，让后续逻辑继续尝试 API
     
-    raise ValueError(f"SSO 穿透失败。最终地址: {final_url}, 提示: {error_msg}")
+    # 提取页面上的具体报错（如果还在 SSO 页面）
+    error_msg = "未知错误"
+    msg_match = re.search(r'class="msg.*?>(.*?)<', login_res.text, re.S)
+    if msg_match: error_msg = msg_match.group(1).strip()
+    
+    raise ValueError(f"SSO 穿透失败。最终停留地址: {final_url}, 提示: {error_msg}")
 
 async def perform_duaa_login(target_student_id, personal_password=None):
     vpn_user, vpn_pass = (target_student_id, personal_password) if personal_password else get_shared_vpn()
     use_vpn = bool(vpn_pass)
     
-    async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
+    # 设置 verify=False 时关闭警告（可选）
+    async with httpx.AsyncClient(verify=False, follow_redirects=True, headers={"User-Agent": UA}) as client:
         if use_vpn:
             logger.info(f"使用凭据 {vpn_user} 尝试 SSO 穿透...")
             await sso_login(client, vpn_user, vpn_pass)
             
-            # 尝试通过隧道获取 SessionId
-            # 优先尝试 8347 端口，不行则尝试 8346
+            # 隧道已打通，开始请求教务 API
             last_err = None
             for port in PORTS:
                 try:
                     urls = get_network_urls(True, port)
-                    res = await client.get(urls["user_login"], params={"phone": target_student_id, "password": "", "verificationType": "2", "userLevel": "1"}, headers={"User-Agent": UA}, timeout=10)
+                    res = await client.get(urls["user_login"], params={"phone": target_student_id, "password": "", "verificationType": "2", "userLevel": "1"}, timeout=10)
                     res.raise_for_status()
                     json_data = res.json()
                     if json_data.get("STATUS") == "0":
@@ -148,12 +168,12 @@ async def perform_duaa_login(target_student_id, personal_password=None):
                     last_err = e; continue
             raise Exception(f"VPN 隧道已打通，但无法通过隧道登录教务: {last_err}")
         else:
-            # 直连逻辑
+            # 直连逻辑不变
             last_err = None
             for port in PORTS:
                 try:
                     urls = get_network_urls(False, port)
-                    res = await client.get(urls["user_login"], params={"phone": target_student_id, "password": "", "verificationType": "2", "userLevel": "1"}, headers={"User-Agent": UA}, timeout=10)
+                    res = await client.get(urls["user_login"], params={"phone": target_student_id, "password": "", "verificationType": "2", "userLevel": "1"}, timeout=10)
                     res.raise_for_status()
                     json_data = res.json()
                     if json_data.get("STATUS") == "0":
@@ -181,6 +201,7 @@ async def call_api(use_vpn, session_id, cookies, path_key, params, is_post=False
                 last_err = e; continue
         raise Exception(f"接口调用失败: {last_err}")
 
+        
 # 4. 指令处理器
 duaa_cmd = on_command("duaa", priority=5, block=True)
 
