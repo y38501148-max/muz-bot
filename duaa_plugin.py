@@ -125,16 +125,23 @@ async def sso_login(client: httpx.AsyncClient, username, password):
     is_in_vpn = "d.buaa.edu.cn" in final_url or any("wengine" in name.lower() or "twinkle" in name.lower() for name in vpn_cookies)
 
     if is_in_vpn:
-        # 嗅探探测：尝试访问 8347 端口的 API 首页
+        # 嗅探探测：仅作为隧道预热，不再作为判定生死的前提
         probe_urls = get_network_urls(True, "8347")
         try:
             probe_res = await client.get(probe_urls["service_home"] + "/", timeout=8)
-            if probe_res.status_code == 200:
-                logger.info("VPN 隧道嗅探探测成功！")
-                return True
+            logger.info(f"VPN 隧道嗅探预热完成，状态码: {probe_res.status_code}")
         except Exception as e:
-            logger.warning(f"隧道打通但嗅探异常: {e}")
-            return True # 依然返回 True，让后续逻辑继续尝试 API
+            logger.warning(f"隧道打通但嗅探预热异常: {e}")
+            
+        # 只要最终 URL 在 WebVPN 域下，直接认定 SSO 穿透成功！
+        return True
+    
+    # 如果没进 is_in_vpn，提取页面上的具体报错（比如密码错误）
+    error_msg = "未知错误"
+    msg_match = re.search(r'class="msg.*?>(.*?)<', login_res.text, re.S)
+    if msg_match: error_msg = msg_match.group(1).strip()
+    
+    raise ValueError(f"SSO 穿透失败。最终停留地址: {final_url}, 提示: {error_msg}")
     
     # 提取页面上的具体报错（如果还在 SSO 页面）
     error_msg = "未知错误"
@@ -201,7 +208,7 @@ async def call_api(use_vpn, session_id, cookies, path_key, params, is_post=False
                 last_err = e; continue
         raise Exception(f"接口调用失败: {last_err}")
 
-        
+
 # 4. 指令处理器
 duaa_cmd = on_command("duaa", priority=5, block=True)
 
