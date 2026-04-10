@@ -2,7 +2,7 @@ import httpx
 import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from nonebot import on_command
+from nonebot import on_command, logger
 from nonebot.adapters.onebot.v11 import Message, MessageEvent
 from nonebot.params import CommandArg
 
@@ -42,13 +42,15 @@ async def duaa_login(student_id):
         params = {"phone": student_id, "password": "", "verificationType": "2", "userLevel": "1"}
         try:
             res = await client.get(LOGIN_URL, params=params, headers={"User-Agent": UA}, timeout=10)
+            res.raise_for_status()
             json_data = res.json()
             if json_data.get("STATUS") == "0":
                 results = json_data.get("result", {})
                 return results.get("id"), results.get("sessionId"), results.get("userName", "未知姓名")
+            raise Exception(json_data.get("ERRMSG", "登录状态异常"))
         except Exception as e:
             logger.error(f"Duaa 登录失败: {e}")
-    return None, None, None
+            raise
 
 async def get_schedule(user_id, session_id):
     date_str = datetime.now().strftime("%Y%m%d")
@@ -56,11 +58,14 @@ async def get_schedule(user_id, session_id):
         try:
             res = await client.get(SCHEDULE_URL, params={"id": user_id, "dateStr": date_str},
                                  headers={"Sessionid": session_id, "User-Agent": UA}, timeout=10)
+            res.raise_for_status()
             json_data = res.json()
-            return json_data.get("result", []) if json_data.get("STATUS") == "0" else []
+            if json_data.get("STATUS") == "0":
+                return json_data.get("result", [])
+            raise Exception(json_data.get("ERRMSG", "课表获取失败"))
         except Exception as e:
             logger.error(f"Duaa 获取课表失败: {e}")
-            return []
+            raise
 
 # 4. 指令处理器
 duaa_cmd = on_command("duaa", priority=5, block=True)
@@ -79,8 +84,10 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
     if action == "绑定":
         if len(sub_cmd) < 3: await duaa_cmd.finish("请输入：/duaa 绑定 [学号] [自定义ID]")
         sid, alias = sub_cmd[1], sub_cmd[2]
-        uid, sess, real_name = await duaa_login(sid)
-        if not uid or not sess: await duaa_cmd.finish("❌ 登录失败，请检查学号或网络")
+        try:
+            uid, sess, real_name = await duaa_login(sid)
+        except Exception as e:
+            await duaa_cmd.finish(f"❌ 绑定失败: {e}")
         
         accounts[alias] = {"student_id": sid, "real_name": real_name}
         data["accounts"] = accounts
@@ -94,10 +101,11 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             await duaa_cmd.finish(f"❓ 请指定预览哪个账号的课表。\n当前可选 ID：{', '.join(accounts.keys())}")
         
         acc = accounts[alias]
-        uid, sess, _ = await duaa_login(acc['student_id'])
-        if not uid or not sess: await duaa_cmd.finish("❌ 登录失效")
-        
-        sched = await get_schedule(uid, sess)
+        try:
+            uid, sess, _ = await duaa_login(acc['student_id'])
+            sched = await get_schedule(uid, sess)
+        except Exception as e:
+            await duaa_cmd.finish(f"❌ 课表刷新失败: {e}")
         acc["today_schedule"] = sched # 更新该账号的缓存课表
         save_user_data(qq_id, data)
 
