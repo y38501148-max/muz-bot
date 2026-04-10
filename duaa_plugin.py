@@ -17,7 +17,8 @@ SSO_LOGIN_URL = "https://d.buaa.edu.cn/https/77726476706e69737468656265737421e3e
 VPN_SERVICE_ID = "77726476706e69737468656265737421f9f44d9d342326526b0988e29d51367ba018"
 # iClass 在 WebVPN 中的通用标识（不区分端口）
 ICLASS_VPN_ID = "77726476706e69737468656265737421"
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+# 伪装成安卓微信客户端
+UA = "Mozilla/5.0 (Linux; Android 13; M2012K11AC Build/TKQ1.220829.002; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/116.0.0.0 Mobile Safari/537.36 wxwork/4.1.22 MicroMessenger/7.0.1 NetType/WIFI Language/zh ColorScheme/Light"
 PORTS = ["8347", "8346"]
 
 def get_network_urls(use_vpn, port="8347"):
@@ -166,9 +167,9 @@ async def call_api(use_vpn, session_id, cookies, path_key, params, is_post=False
             urls = get_network_urls(use_vpn, port)
             try:
                 headers = {"Sessionid": session_id, "User-Agent": UA}
+                # 【改回 params=params】
                 if is_post:
-                    # 【核心修复】将 params=params 改为了 data=params，以表单 body 形式提交
-                    res = await client.post(urls[path_key], data=params, headers=headers, timeout=10)
+                    res = await client.post(urls[path_key], params=params, headers=headers, timeout=10)
                 else:
                     res = await client.get(urls[path_key], params=params, headers=headers, timeout=10)
                 res.raise_for_status()
@@ -282,11 +283,14 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
 
         try:
             uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
-            # 生成时间戳
-            ts = int(datetime.now().timestamp() * 1000) + 36000
+            
+            # 【关键修复】减去10秒，防止未来时间戳被拦截，并转为字符串
+            ts_str = str(int(datetime.now().timestamp() * 1000) - 10000)
             has_vpn = bool(acc.get('password') or get_shared_vpn()[1])
             
-            res = await call_api(has_vpn, sess, cookies, "scan_sign", {"id": uid, "courseSchedId": target["id"], "timestamp": ts}, is_post=True)
+            payload = {"id": uid, "courseSchedId": target["id"], "timestamp": ts_str}
+            
+            res = await call_api(has_vpn, sess, cookies, "scan_sign", payload, is_post=True)
             status = str(res.get("STATUS", res.get("status", "-1")))
             
             if status == "0": 
