@@ -4,6 +4,7 @@ import re
 import random
 from datetime import datetime, timedelta
 from pathlib import Path
+from Crypto.Cipher import AES
 from nonebot import on_command, logger, require, get_bots
 from nonebot.adapters.onebot.v11 import Message, MessageEvent
 from nonebot.params import CommandArg
@@ -18,33 +19,57 @@ USER_DIR = BASE_DATA_DIR / "users"
 CONFIG_FILE = BASE_DATA_DIR / "config.json"
 USER_DIR.mkdir(parents=True, exist_ok=True)
 
-SSO_LOGIN_URL = "https://d.buaa.edu.cn/https/77726476706e69737468656265737421e3e44ed225256951300d8db9d6562d/login"
-VPN_SERVICE_ID = "77726476706e69737468656265737421f9f44d9d342326526b0988e29d51367ba018"
-ICLASS_VPN_ID = "77726476706e69737468656265737421"
 # 伪装成安卓微信客户端
 UA = "Mozilla/5.0 (Linux; Android 13; M2012K11AC Build/TKQ1.220829.002; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/116.0.0.0 Mobile Safari/537.36 wxwork/4.1.22 MicroMessenger/7.0.1 NetType/WIFI Language/zh ColorScheme/Light"
 PORTS = ["8347", "8346"]
 
-def get_network_urls(use_vpn, port="8347"):
-    if use_vpn:
-        port_suffix = f"-{port}" if port != "443" else ""
-        base = f"https://d.buaa.edu.cn/https{port_suffix}/{VPN_SERVICE_ID}"
-        return {
-            "service_home": base,
-            "user_login": f"{base}/app/user/login.action",
-            "course_schedule": f"{base}/app/course/get_stu_course_sched.action",
-            "scan_sign": f"{base}/app/course/stu_scan_sign.action"
-        }
-    else:
-        base = f"https://iclass.buaa.edu.cn:{port}"
-        return {
-            "service_home": base,
-            "user_login": f"{base}/app/user/login.action",
-            "course_schedule": f"{base}/app/course/get_stu_course_sched.action",
-            "scan_sign": "http://iclass.buaa.edu.cn:8081/app/course/stu_scan_sign.action"
-        }
+# 2. WebVPN 动态加密 (基于 UBAA 逻辑)
+VPN_KEY = b"wrdvpnisthebest!"
+VPN_IV = b"wrdvpnisthebest!"
 
-# 2. 数据处理与配置管理
+def vpn_encrypt(text: str) -> str:
+    # 模拟 Kotlin 的 AES/CFB/NoPadding 实现
+    plain = text.encode('utf-8')
+    # 手动填充到 16 的倍数（虽然 CFB 不需要，但为了完全对齐 Kotlin 实现）
+    padding_len = (16 - len(plain) % 16) % 16
+    padded_plain = plain + b'0' * padding_len
+    
+    # Python 里的 AES CFB 默认 segment_size 是 128
+    cipher = AES.new(VPN_KEY, AES.MODE_CFB, iv=VPN_IV, segment_size=128)
+    ct = cipher.encrypt(padded_plain)
+    
+    # 最终取回原明文长度对应的密文
+    return VPN_IV.hex() + ct[:len(plain)].hex()
+
+def to_vpn_url(url: str, use_vpn: bool) -> str:
+    if not use_vpn: return url
+    if "d.buaa.edu.cn" in url: return url
+    
+    match = re.match(r"(https?)://([^:/]+)(?::(\d+))?(.*)", url)
+    if not match: return url
+    
+    protocol, host, port, path = match.groups()
+    if not port:
+        port = "443" if protocol == "https" else "80"
+    
+    encrypted_host = vpn_encrypt(host)
+    # 构造加密路径
+    prefix = protocol
+    if port != "80" and port != "443":
+        prefix = f"{protocol}-{port}"
+        
+    return f"https://d.buaa.edu.cn/{prefix}/{encrypted_host}{path}"
+
+def get_network_urls(use_vpn: bool):
+    # 返回基础 API 地址
+    return {
+        "login": to_vpn_url("https://iclass.buaa.edu.cn:8347/app/user/login.action", use_vpn),
+        "schedule": to_vpn_url("https://iclass.buaa.edu.cn:8347/app/course/get_stu_course_sched.action", use_vpn),
+        "timestamp": to_vpn_url("http://iclass.buaa.edu.cn:8081/app/common/get_timestamp.action", use_vpn),
+        "sign": to_vpn_url("http://iclass.buaa.edu.cn:8081/app/course/stu_scan_sign.action", use_vpn),
+    }
+
+# 3. 数据处理与配置管理
 def load_user_data(qq_id):
     file_path = USER_DIR / f"{qq_id}.json"
     if not file_path.exists(): return {"accounts": {}}
@@ -70,7 +95,7 @@ def get_shared_vpn():
 def set_shared_vpn(username, password):
     CONFIG_FILE.write_text(json.dumps({"vpn_username": username, "vpn_password": password}), encoding="utf-8")
 
-# 3. 核心 API
+# 4. 核心 API
 async def sso_login(client: httpx.AsyncClient, username, password):
     vpn_entry_url = "https://d.buaa.edu.cn/login"
     try:
@@ -103,27 +128,21 @@ async def sso_login(client: httpx.AsyncClient, username, password):
         raise Exception(f"SSO 登录过程网络异常: {e}")
 
     final_url = str(login_res.url)
-    
     if login_res.status_code == 401 or "密码错误" in login_res.text:
-        raise ValueError("SSO 认证失败：学号或密码错误，或触发了前端加密校验。")
+        raise ValueError("SSO 认证失败：学号或密码错误。")
     
     vpn_cookies = [c.name for k, c in client.cookies.jar._cookies.items() for _, c in c.items() for _, c in c.items()]
     is_in_vpn = "d.buaa.edu.cn" in final_url or any("wengine" in name.lower() or "twinkle" in name.lower() for name in vpn_cookies)
 
     if is_in_vpn:
-        probe_urls = get_network_urls(True, "8347")
+        # 预探测一下
+        probe_url = to_vpn_url("https://iclass.buaa.edu.cn:8347/", True)
         try:
-            probe_res = await client.get(probe_urls["service_home"] + "/", timeout=8)
-            logger.info(f"VPN 隧道嗅探预热完成，状态码: {probe_res.status_code}")
-        except Exception as e:
-            logger.warning(f"隧道打通但嗅探预热异常: {e}")
+            await client.get(probe_url, timeout=8)
+        except: pass
         return True
     
-    error_msg = "未知错误"
-    msg_match = re.search(r'class="msg.*?>(.*?)<', login_res.text, re.S)
-    if msg_match: error_msg = msg_match.group(1).strip()
-    
-    raise ValueError(f"SSO 穿透失败。最终停留地址: {final_url}, 提示: {error_msg}")
+    raise ValueError(f"SSO 穿透失败。最终地址: {final_url}")
 
 async def perform_duaa_login(target_student_id, personal_password=None):
     vpn_user, vpn_pass = (target_student_id, personal_password) if personal_password else get_shared_vpn()
@@ -134,52 +153,47 @@ async def perform_duaa_login(target_student_id, personal_password=None):
             logger.info(f"使用凭据 {vpn_user} 尝试 SSO 穿透...")
             await sso_login(client, vpn_user, vpn_pass)
             
-            last_err = None
-            for port in PORTS:
-                try:
-                    urls = get_network_urls(True, port)
-                    res = await client.get(urls["user_login"], params={"phone": target_student_id, "password": "", "verificationType": "2", "userLevel": "1"}, timeout=10)
-                    res.raise_for_status()
-                    json_data = res.json()
-                    if json_data.get("STATUS") == "0":
-                        results = json_data.get("result", {})
-                        return results.get("id"), results.get("sessionId"), results.get("userName", "未知姓名"), dict(client.cookies)
-                except Exception as e:
-                    last_err = e; continue
-            raise Exception(f"VPN 隧道已打通，但无法通过隧道登录教务: {last_err}")
-        else:
-            last_err = None
-            for port in PORTS:
-                try:
-                    urls = get_network_urls(False, port)
-                    res = await client.get(urls["user_login"], params={"phone": target_student_id, "password": "", "verificationType": "2", "userLevel": "1"}, timeout=10)
-                    res.raise_for_status()
-                    json_data = res.json()
-                    if json_data.get("STATUS") == "0":
-                        results = json_data.get("result", {})
-                        return results.get("id"), results.get("sessionId"), results.get("userName", "未知姓名"), dict(client.cookies)
-                except Exception as e:
-                    last_err = e; continue
-            raise Exception(f"直连失败: {last_err} (外网用户请提供密码或配置全局账号)")
-
-async def call_api(use_vpn, session_id, cookies, path_key, params, is_post=False):
-    ports_to_try = PORTS
-    last_err = None
-    async with httpx.AsyncClient(verify=False, follow_redirects=True, cookies=cookies or {}) as client:
-        for port in ports_to_try:
-            urls = get_network_urls(use_vpn, port)
+            urls = get_network_urls(True)
             try:
-                headers = {"Sessionid": session_id, "User-Agent": UA}
-                if is_post:
-                    # 参照 Rust 版本，签到接口虽然是 POST，但参数放在 URL Query 里
-                    res = await client.post(urls[path_key], params=params, headers=headers, timeout=10)
-                else:
-                    res = await client.get(urls[path_key], params=params, headers=headers, timeout=10)
+                # 只试 8347，目前的 WebVPN 对加密路径支持最好
+                res = await client.get(urls["login"], params={"phone": target_student_id, "password": "", "verificationType": "2", "userLevel": "1"}, timeout=10)
                 res.raise_for_status()
-                return res.json()
+                json_data = res.json()
+                if json_data.get("STATUS") == "0":
+                    results = json_data.get("result", {})
+                    return results.get("id"), results.get("sessionId"), results.get("userName", "未知姓名"), dict(client.cookies)
             except Exception as e:
-                last_err = e; continue
-        raise Exception(f"接口调用失败: {last_err}")
+                raise Exception(f"VPN 隧道已打通，但登录教务接口失败: {e}")
+        else:
+            # 直连逻辑
+            for port in PORTS:
+                try:
+                    urls = get_network_urls(False)
+                    # 此处 urls["login"] 内部已由 to_vpn_url 处理（use_vpn=False 则返回原样但不带端口，所以这里需要微调）
+                    direct_url = f"https://iclass.buaa.edu.cn:{port}/app/user/login.action"
+                    res = await client.get(direct_url, params={"phone": target_student_id, "password": "", "verificationType": "2", "userLevel": "1"}, timeout=10)
+                    res.raise_for_status()
+                    json_data = res.json()
+                    if json_data.get("STATUS") == "0":
+                        results = json_data.get("result", {})
+                        return results.get("id"), results.get("sessionId"), results.get("userName", "未知姓名"), dict(client.cookies)
+                except: continue
+            raise Exception("直连教务失败（如果在校外，请提供密码或配置全局账号）")
+
+async def call_api(use_vpn, session_id, cookies, path_key, params, is_post=False, uid=None):
+    async with httpx.AsyncClient(verify=False, follow_redirects=True, cookies=cookies or {}) as client:
+        urls = get_network_urls(use_vpn)
+        try:
+            headers = {"Sessionid": session_id, "User-Agent": UA}
+            if is_post:
+                # 签到专用的 POST 格式：参数在 URL，ID 在 Body
+                res = await client.post(urls[path_key], params=params, data={"id": uid} if uid else None, headers=headers, timeout=10)
+            else:
+                res = await client.get(urls[path_key], params=params, headers=headers, timeout=10)
+            res.raise_for_status()
+            return res.json()
+        except Exception as e:
+            raise Exception(f"API 调用异常: {e}")
 
 
 # 4. 指令处理器
@@ -301,19 +315,19 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
 
         try:
             uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
-            # 【核心修正】根据 Rust 源码，时间戳减去 10 秒以绕过服务器防超前机制
-            ts_str = str(int(datetime.now().timestamp() * 1000) - 10000)
             has_vpn = bool(acc.get('password') or get_shared_vpn()[1])
             
-            payload = {"id": uid, "courseSchedId": target["id"], "timestamp": ts_str}
+            # 【重要】从服务器获取最新时间戳，避免本地时间误差
+            ts_res = await call_api(has_vpn, sess, cookies, "timestamp", {})
+            server_ts = ts_res.get("timestamp") or str(int(datetime.now().timestamp() * 1000))
             
-            res = await call_api(has_vpn, sess, cookies, "scan_sign", payload, is_post=True)
+            payload = {"courseSchedId": target["id"], "timestamp": server_ts}
+            res = await call_api(has_vpn, sess, cookies, "sign", payload, is_post=True, uid=uid)
+            
             status = str(res.get("STATUS", res.get("status", "-1")))
-            
             if status == "0": 
                 su_tip = " (☢️强制模式)" if is_su else ""
                 await duaa_cmd.send(f"🎯 《{target['courseName']}》签到成功！{su_tip}")
-                # 同步更新本地状态，防止后续定时任务重复签到
                 target["signStatus"] = "1"
                 save_user_data(qq_id, data)
             else: 
@@ -410,21 +424,23 @@ async def auto_checkin_executor():
                     
                     try:
                         uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
-                        # 时间戳规避
-                        ts_str = str(int(datetime.now().timestamp() * 1000) - 10000)
                         has_vpn = bool(acc.get('password') or get_shared_vpn()[1])
                         
-                        payload = {"id": uid, "courseSchedId": course["id"], "timestamp": ts_str}
-                        res = await call_api(has_vpn, sess, cookies, "scan_sign", payload, is_post=True)
-                        status = str(res.get("STATUS", res.get("status", "-1")))
+                        # 同步服务器时间
+                        ts_res = await call_api(has_vpn, sess, cookies, "timestamp", {})
+                        server_ts = ts_res.get("timestamp") or str(int(datetime.now().timestamp() * 1000))
                         
+                        payload = {"courseSchedId": course["id"], "timestamp": server_ts}
+                        res = await call_api(has_vpn, sess, cookies, "sign", payload, is_post=True, uid=uid)
+                        
+                        status = str(res.get("STATUS", res.get("status", "-1")))
                         course_name = course.get("courseName", "未知课程")
                         
                         if status == "0":
                             course["signStatus"] = "1"
-                            msg = f"[CQ:at,qq={qq_id}] 🤖 自动签到成功！\n账号：[{alias}]\n课程：《{course_name}》\n（系统已在课前随机时间内为您完成代签）"
+                            msg = f"[CQ:at,qq={qq_id}] 🤖 自动签到成功！\n账号：[{alias}]\n课程：《{course_name}》"
                         else:
-                            msg = f"[CQ:at,qq={qq_id}] ⚠️ 自动签到被拒\n账号：[{alias}]\n课程：《{course_name}》\n原因：{res.get('ERRMSG', '不在签到开放期/二维码失效')}\n建议等老师放出二维码后手动发送指令：\n/duaa 签到 {alias}"
+                            msg = f"[CQ:at,qq={qq_id}] ⚠️ 自动签到被拒\n账号：[{alias}]\n课程：《{course_name}》\n原因：{res.get('ERRMSG', '未知')}"
                             
                         await bot.send_group_msg(group_id=group_id, message=msg)
                     except Exception as e:
