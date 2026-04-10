@@ -46,7 +46,8 @@ async def duaa_login(student_id):
             if json_data.get("STATUS") == "0":
                 results = json_data.get("result", {})
                 return results.get("id"), results.get("sessionId"), results.get("userName", "未知姓名")
-        except: pass
+        except Exception as e:
+            logger.error(f"Duaa 登录失败: {e}")
     return None, None, None
 
 async def get_schedule(user_id, session_id):
@@ -57,7 +58,9 @@ async def get_schedule(user_id, session_id):
                                  headers={"Sessionid": session_id, "User-Agent": UA}, timeout=10)
             json_data = res.json()
             return json_data.get("result", []) if json_data.get("STATUS") == "0" else []
-        except: return []
+        except Exception as e:
+            logger.error(f"Duaa 获取课表失败: {e}")
+            return []
 
 # 4. 指令处理器
 duaa_cmd = on_command("duaa", priority=5, block=True)
