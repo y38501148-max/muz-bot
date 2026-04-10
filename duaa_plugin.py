@@ -253,19 +253,24 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             
         target = sched[idx]
 
-        # 【新增】本地时间校验逻辑
+# 【新增】本地时间校验逻辑
         if not is_su:
             now = datetime.now()
-            begin_str = target.get("classBeginTime", "00:00")
-            end_str = target.get("classEndTime", "23:59")
+            begin_str = target.get("classBeginTime", "")
+            end_str = target.get("classEndTime", "")
             
             try:
-                # 补全格式以兼容 datetime 解析 (可能为 HH:MM 或 HH:MM:SS)
-                if len(begin_str) == 5: begin_str += ":00"
-                if len(end_str) == 5: end_str += ":00"
-                
-                start_dt = datetime.strptime(begin_str, "%H:%M:%S").replace(year=now.year, month=now.month, day=now.day)
-                end_dt = datetime.strptime(end_str, "%H:%M:%S").replace(year=now.year, month=now.month, day=now.day)
+                # 强大的时间提取函数：自动剥离日期，只取时间部分
+                def parse_dt(t_str, default_hour):
+                    if not t_str: return now.replace(hour=default_hour, minute=0, second=0)
+                    # 如果包含空格(有日期)，只取最后一部分(时间)
+                    t_str = t_str.split(" ")[-1] 
+                    if len(t_str) == 5: t_str += ":00" # 如果只有 HH:MM，补齐秒
+                    dt = datetime.strptime(t_str, "%H:%M:%S")
+                    return now.replace(hour=dt.hour, minute=dt.minute, second=dt.second, microsecond=0)
+
+                start_dt = parse_dt(begin_str, 0)
+                end_dt = parse_dt(end_str, 23)
                 
                 # 设定可签到区间：课前10分钟 ~ 下课前1分钟
                 valid_start = start_dt - timedelta(minutes=10)
@@ -279,7 +284,7 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
                     )
                     return
             except Exception as e:
-                logger.warning(f"课表时间解析失败，默认放行。错误信息: {e}")
+                logger.warning(f"课表时间解析失败，默认放行。错误: {e}, 原始数据: {begin_str}")
 
         try:
             uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
