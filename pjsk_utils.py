@@ -26,42 +26,35 @@ class PJSKUtils:
                 self.characters = json.load(f)
 
     async def update_config(self):
-        """从 GitHub 更新角色配置文件"""
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{BASE_URL}src/characters.json")
-            if resp.status_code == 200:
-                self.characters = resp.json()
-                with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                    json.dump(self.characters, f, ensure_ascii=False, indent=4)
-                return True
+        """从 GitHub 更新角色配置文件 (增加 Timeout)"""
+        # 增加 Timeout 防止国内网络导致挂起
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                resp = await client.get(f"{BASE_URL}src/characters.json")
+                if resp.status_code == 200:
+                    self.characters = resp.json()
+                    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                        json.dump(self.characters, f, ensure_ascii=False, indent=4)
+                    return True
+            except Exception:
+                pass
         return False
-
-    def get_character_by_id(self, char_id):
-        for char in self.characters:
-            if char["id"] == char_id:
-                return char
-        return None
-
-    def find_character(self, keyword):
-        """根据 ID 或名称模糊查找"""
-        for char in self.characters:
-            if keyword == char["id"] or keyword.lower() in char["name"].lower():
-                return char
-        return None
 
     async def get_sticker_image(self, char):
         """获取并缓存贴纸底图"""
         img_path = STICKERS_DIR / char["img"]
         if not img_path.exists():
             img_path.parent.mkdir(parents=True, exist_ok=True)
-            async with httpx.AsyncClient() as client:
-                # 修正：去掉了 /stickers/，直接在 public/img/ 下
+            async with httpx.AsyncClient(timeout=15.0) as client:
                 url = f"{BASE_URL}public/img/{char['img']}"
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    with open(img_path, "wb") as f:
-                        f.write(resp.content)
-                else:
+                try:
+                    resp = await client.get(url)
+                    if resp.status_code == 200:
+                        with open(img_path, "wb") as f:
+                            f.write(resp.content)
+                    else:
+                        return None
+                except Exception:
                     return None
         return Image.open(img_path).convert("RGBA")
 
@@ -73,16 +66,13 @@ class PJSKUtils:
                 await self.update_config()
                 char = self.find_character(char_id)
             if not char:
-                return None, "未找到该角色或 ID"
+                return None, "未找到该角色或 ID，或 GitHub 资源获取失败"
 
         base_img = await self.get_sticker_image(char)
         if not base_img:
-            return None, "素材下载失败"
+            return None, "素材下载失败（可能是网络问题）"
 
-        # 渲染逻辑
         width, height = base_img.size
-        
-        # 字体处理
         conf = char.get("defaultText", {})
         font_size = conf.get("s", 47)
         
@@ -103,47 +93,40 @@ class PJSKUtils:
                         font = ImageFont.truetype(p, font_size)
                         break
                 if not font:
+                    # 提示：默认字体不支持 stroke 和部分 anchor，如果真走到了这里可能会崩溃
+                    # 最好确保你的环境中安装了上方的任意一款 TTF 字体
                     font = ImageFont.load_default()
         except Exception:
             font = ImageFont.load_default()
 
-        # 获取坐标和属性
         x = conf.get("x", 148)
         y = conf.get("y", 58)
         r = conf.get("r", 0)
         color = char.get("color", "#FB8AAC")
-        stroke_width = 6 # 增加描边宽度，匹配原版效果
+        stroke_width = 6
 
-        # 计算文字大小
-        # 使用 anchor="mm" 模式，中心对齐
-        # 先创建一个包含文字和描边的透明图层
-        # 文字可能很长，所以图层要足够大
         temp_w, temp_h = width * 2, height * 2
         text_layer = Image.new("RGBA", (temp_w, temp_h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(text_layer)
         
         cx, cy = temp_w // 2, temp_h // 2
         
-        # 绘制描边
-        for ox in range(-stroke_width, stroke_width + 1):
-            for oy in range(-stroke_width, stroke_width + 1):
-                if ox*ox + oy*oy <= stroke_width*stroke_width: # 圆形描边更平滑
-                    draw.text((cx + ox, cy + oy), text, font=font, fill="white", anchor="mm")
-        
-        # 绘制文字
-        draw.text((cx, cy), text, font=font, fill=color, anchor="mm")
+        # 优化点：删除慢速的 for 循环，使用 Pillow 原生支持的描边 (需要 Pillow >= 8.2.0)
+        try:
+            draw.text((cx, cy), text, font=font, fill=color, anchor="mm", stroke_width=stroke_width, stroke_fill="white")
+        except NotImplementedError:
+            # 捕获默认字体不支持 stroke / anchor 的异常
+            return None, "环境缺少必要的 TrueType 字体，无法渲染文本"
 
-        # 旋转文字层 (逆时针旋转，原配置 r 为角度)
-        # sekai-stickers 的 r 是弧度还是角度？看 JSON 通常是角度。
-        # 原版是用之后顺时针旋转，所以这里用 -r
-        rotated_text = text_layer.rotate(-r, resample=Image.BICUBIC, expand=False)
+        # 逆时针旋转
+        rotated_text = text_layer.rotate(-r, resample=Image.Resampling.BICUBIC, expand=False)
         
-        # 将旋转后的层贴回底图
-        # text_layer 的 (cx, cy) 对应 base_img 的 (x, y)
+        # 计算偏移
         offset_x = x - cx
         offset_y = y - cy
         
-        base_img.alpha_composite(rotated_text, (int(offset_x), int(offset_y)))
+        # 修复点：抛弃 alpha_composite，使用 paste 及 mask 处理溢出和负坐标
+        base_img.paste(rotated_text, (int(offset_x), int(offset_y)), mask=rotated_text)
         
         output = BytesIO()
         base_img.save(output, format="PNG")
