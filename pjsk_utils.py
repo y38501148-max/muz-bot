@@ -27,7 +27,6 @@ class PJSKUtils:
 
     async def update_config(self):
         """从 GitHub 更新角色配置文件 (增加 Timeout)"""
-        # 增加 Timeout 防止国内网络导致挂起
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
                 resp = await client.get(f"{BASE_URL}src/characters.json")
@@ -39,6 +38,20 @@ class PJSKUtils:
             except Exception:
                 pass
         return False
+
+    def get_character_by_id(self, char_id):
+        for char in self.characters:
+            if str(char["id"]) == str(char_id):
+                return char
+        return None
+
+    def find_character(self, keyword):
+        """根据 ID 或名称模糊查找"""
+        for char in self.characters:
+            # 修复：确保输入的字符串 ID 能和 JSON 里的数字 ID 匹配
+            if keyword == str(char["id"]) or keyword.lower() in char["name"].lower():
+                return char
+        return None
 
     async def get_sticker_image(self, char):
         """获取并缓存贴纸底图"""
@@ -93,8 +106,6 @@ class PJSKUtils:
                         font = ImageFont.truetype(p, font_size)
                         break
                 if not font:
-                    # 提示：默认字体不支持 stroke 和部分 anchor，如果真走到了这里可能会崩溃
-                    # 最好确保你的环境中安装了上方的任意一款 TTF 字体
                     font = ImageFont.load_default()
         except Exception:
             font = ImageFont.load_default()
@@ -111,11 +122,10 @@ class PJSKUtils:
         
         cx, cy = temp_w // 2, temp_h // 2
         
-        # 优化点：删除慢速的 for 循环，使用 Pillow 原生支持的描边 (需要 Pillow >= 8.2.0)
+        # 使用 Pillow 原生支持的描边
         try:
             draw.text((cx, cy), text, font=font, fill=color, anchor="mm", stroke_width=stroke_width, stroke_fill="white")
         except NotImplementedError:
-            # 捕获默认字体不支持 stroke / anchor 的异常
             return None, "环境缺少必要的 TrueType 字体，无法渲染文本"
 
         # 逆时针旋转
@@ -125,7 +135,7 @@ class PJSKUtils:
         offset_x = x - cx
         offset_y = y - cy
         
-        # 修复点：抛弃 alpha_composite，使用 paste 及 mask 处理溢出和负坐标
+        # 修复越界：使用 paste 及 mask 处理溢出和负坐标
         base_img.paste(rotated_text, (int(offset_x), int(offset_y)), mask=rotated_text)
         
         output = BytesIO()
