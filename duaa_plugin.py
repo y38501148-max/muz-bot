@@ -286,7 +286,9 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             for i, c in enumerate(sched, 1):
                 status = "✅已签" if str(c.get("signStatus")) == "1" else "⏳未签"
                 trig = f" | ⏰打卡: {c.get('auto_sign_trigger_hm')}" if c.get("auto_sign_trigger_hm") and status == "⏳未签" else ""
-                msg += f"\n[{i}] 📖 {c['courseName']}\n    📍 {c.get('roomName') or '未知'} | {status}{trig}"
+                # 恢复 classroomName 的备用读取逻辑
+                room = c.get("roomName") or c.get("classroomName") or "未知"
+                msg += f"\n[{i}] 📖 {c['courseName']}\n    📍 {room} | {status}{trig}"
             await duaa_cmd.send(msg)
         except Exception as e: await duaa_cmd.finish(f"❌ 查课表失败: {e}")
 
@@ -333,7 +335,7 @@ async def midnight_sleep_reminder():
     if not bot: return
     groups = {load_user_data(f.stem).get("notify_group") for f in USER_DIR.glob("*.json") if load_user_data(f.stem).get("notify_group")}
     for gid in groups:
-        try: await bot.send_group_msg(group_id=gid, message="[CQ:at,qq=all] 🌙 滴滴！现在是半夜12点。大家快去睡觉保护头发吧！晚安~")
+        try: await bot.send_group_msg(group_id=gid, message="[CQ:at,qq=all] 🌙 滴滴！现在是半夜12点。宝宝们快去睡觉吧！晚安~")
         except: pass
 
 @scheduler.scheduled_job("cron", hour=7, minute=0, id="duaa_daily_sync")
