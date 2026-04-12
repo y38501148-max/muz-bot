@@ -184,7 +184,6 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
     action, qq_id = sub_cmd[0], str(event.get_user_id())
     data = load_user_data(qq_id); accounts = data.get("accounts", {})
 
-    # ... [全局账号、开启自动签到、解绑 逻辑与你原代码一致，保持不变] ...
     if action == "全局账号":
         if len(sub_cmd) < 3: await duaa_cmd.finish("用法：/duaa 全局账号 [学号] [密码]")
         set_shared_vpn(sub_cmd[1], sub_cmd[2]); await duaa_cmd.finish("✅ 全局共享凭据更新成功。")
@@ -297,15 +296,41 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
 # 5. 自动签到定时任务模块 (重构时间与重试逻辑)
 # ==========================================
 
+@scheduler.scheduled_job("cron", hour=0, minute=0, id="duaa_midnight_sleep")
+async def midnight_sleep_reminder():
+    """【新增】每天半夜12点提醒全体成员睡觉"""
+    bots = get_bots()
+    if not bots: return
+    bot = list(bots.values())[0]
+
+    # 收集所有绑定了群聊的用户组，避免在同一个群重复发送
+    notify_groups = set()
+    for file in USER_DIR.glob("*.json"):
+        data = load_user_data(file.stem)
+        if "notify_group" in data:
+            notify_groups.add(data["notify_group"])
+
+    for group_id in notify_groups:
+        try:
+            msg = "[CQ:at,qq=all] 🌙 滴滴！现在是半夜12点啦。明天还要早起上课和自动打卡，宝宝们快去睡觉吧！晚安~"
+            await bot.send_group_msg(group_id=group_id, message=msg)
+        except Exception as e:
+            logger.error(f"发送晚安提醒失败: {e}")
+
 @scheduler.scheduled_job("cron", hour=7, minute=0, id="duaa_daily_sync")
 async def daily_sync():
+    bots = get_bots()
+    bot = list(bots.values())[0] if bots else None
+
     today_str = datetime.now(TZ_BEIJING).strftime("%Y%m%d")
     for file in USER_DIR.glob("*.json"):
         qq_id = file.stem
         data = load_user_data(qq_id)
-        if "notify_group" not in data: continue
+        group_id = data.get("notify_group")
+        if not group_id: continue
             
         changed = False
+        course_count = 0  # 记录该用户今日总课数
         for alias, acc in data.get("accounts", {}).items():
             try:
                 uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
@@ -324,13 +349,22 @@ async def daily_sync():
                                 trigger_dt = dt - timedelta(minutes=random.randint(5, 12))
                                 course["auto_sign_trigger_hm"] = trigger_dt.strftime("%H:%M")
                                 course["retries"] = 0 # 重置重试次数
+                                course_count += 1
                                 
                         acc["today_schedule"] = sched
                         acc["schedule_date"] = today_str 
                         changed = True
             except Exception: pass
                 
-        if changed: save_user_data(qq_id, data)
+        if changed: 
+            save_user_data(qq_id, data)
+            # 【新增】七点课表更新完成并在存在课程的情况下 @ 对应的人
+            if bot and course_count > 0:
+                try:
+                    msg = f"[CQ:at,qq={qq_id}] 🌅 早上好！今日检测到 {course_count} 节课，已为您分配好课前自动签到任务啦。"
+                    await bot.send_group_msg(group_id=group_id, message=msg)
+                except Exception as e:
+                    logger.error(f"发送早晨课表提醒失败: {e}")
 
 @scheduler.scheduled_job("cron", minute="*", id="duaa_auto_checkin_executor")
 async def auto_checkin_executor():
