@@ -105,6 +105,7 @@ class PJSKUtils:
             font_path_to_use = font_path
         else:
             font_paths = [
+                "data/pjsk/yuruka.otf",   # <--- 【新增这一行】把原版字体放在最前面！(如果是otf后缀请改成yuruka.otf)
                 "data/pjsk/font.ttf",
                 "data/pjsk/font.ttc",
                 "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
