@@ -286,7 +286,7 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
                     begin_str = course.get("classBeginTime", "")
                     if begin_str:
                         dt = datetime.strptime(begin_str.split(" ")[-1][:5], "%H:%M")
-                        course["auto_sign_trigger_hm"] = (dt - timedelta(minutes=random.randint(5, 12))).strftime("%H:%M")
+                        course["auto_sign_trigger_hm"] = (dt - timedelta(minutes=random.randint(3, 9))).strftime("%H:%M")
                         course["retries"] = 0
                         count_all += 1
                 acc["today_schedule"] = sched; acc["schedule_date"] = today_str
@@ -419,7 +419,7 @@ async def daily_sync():
                     t_str = course.get("classBeginTime", "")
                     if t_str:
                         dt = datetime.strptime(t_str.split(" ")[-1][:5], "%H:%M")
-                        course["auto_sign_trigger_hm"] = (dt - timedelta(minutes=random.randint(5, 12))).strftime("%H:%M")
+                        course["auto_sign_trigger_hm"] = (dt - timedelta(minutes=random.randint(3, 9))).strftime("%H:%M")
                         course["retries"] = 0; count += 1
                 acc["today_schedule"] = sched; acc["schedule_date"] = today_str; changed = True
             except: pass
