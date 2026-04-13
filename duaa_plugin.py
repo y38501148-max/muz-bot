@@ -264,6 +264,14 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
         await save_user_data(qq_id, data)
         await duaa_cmd.send("✅ 自动签到已开启！\n每天 7:00 自动分配课前时间点进行嗅探。")
         return
+        
+    elif action == "关闭自动签到":
+        if "notify_group" in data:
+            del data["notify_group"]
+            await save_user_data(qq_id, data)
+            await duaa_cmd.finish("🛑 自动签到已成功关闭！将不再为你自动执行每日打卡任务。")
+        else:
+            await duaa_cmd.finish("⚠️ 你当前并未开启自动签到。")
 
     elif action == "解绑":
         if len(sub_cmd) < 2: await duaa_cmd.finish("用法：/duaa 解绑 [自定义ID]")
