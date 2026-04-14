@@ -50,8 +50,8 @@ def get_network_urls(use_vpn):
     else:
         # 校园网直连
         return {
-            "login": "https://iclass.buaa.edu.cn:8347/app/user/login.action",
-            "schedule": "https://iclass.buaa.edu.cn:8347/app/course/get_stu_course_sched.action",
+            "login": "https://iclass.buaa.edu.cn:8346/app/user/login.action",
+            "schedule": "https://iclass.buaa.edu.cn:8346/app/course/get_stu_course_sched.action",
             "timestamp": "http://iclass.buaa.edu.cn:8081/app/common/get_timestamp.action",
             "sign": "http://iclass.buaa.edu.cn:8081/app/course/stu_scan_sign.action"
         }
