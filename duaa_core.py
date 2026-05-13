@@ -138,11 +138,13 @@ async def execute_sign_in(use_vpn, session_id, cookies, uid, course_sched_id, fa
     ts = int(datetime.now().timestamp() * 1000) + 36000
 
     async with httpx.AsyncClient(verify=False, cookies=cookies or {}) as client:
-        headers = {"Sessionid": session_id, "User-Agent": UA}
-        # 将所有的参数放入 Query Params（模拟上一个版本中的 ?id={uid}&... 行为）
+        headers = {"SessionId": session_id, "User-Agent": UA}
+        # 恢复【核心修复】：id 必须放入 Body(FormData) 中，否则会报参数错误
+        # 而 courseSchedId 和 timestamp 留在 Query Params 中
         res = await client.post(
             urls["sign"], 
-            params={"id": uid, "courseSchedId": course_sched_id, "timestamp": str(ts)},
+            params={"courseSchedId": course_sched_id, "timestamp": str(ts)},
+            data={"id": uid},
             headers=headers, 
             timeout=10
         )
