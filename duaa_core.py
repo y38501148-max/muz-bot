@@ -148,10 +148,25 @@ async def fetch_server_timestamp(use_vpn, cookies, fake_time_str=None):
 
 async def execute_sign_in(use_vpn, session_id, cookies, uid, course_sched_id, fake_time_str=None):
     urls = get_network_urls(use_vpn)
-    server_ts = await fetch_server_timestamp(use_vpn, cookies, fake_time_str)
-    if not server_ts: raise Exception("获取服务器时间戳失败")
 
     async with httpx.AsyncClient(verify=False, cookies=cookies or {}) as client:
+        if fake_time_str:
+            try:
+                dt = datetime.strptime(fake_time_str, "%Y-%m-%d %H:%M:%S")
+                server_ts = int((dt - timedelta(minutes=5)).timestamp() * 1000)
+            except Exception:
+                server_ts = None
+        else:
+            server_ts = None
+
+        if not server_ts:
+            res = await client.get(urls["timestamp"], timeout=10)
+            res.raise_for_status()
+            server_ts = res.json().get("timestamp")
+
+        if not server_ts:
+            raise Exception("获取服务器时间戳失败")
+
         res = await client.post(
             urls["sign"],
             params={"courseSchedId": course_sched_id, "timestamp": str(server_ts)},
