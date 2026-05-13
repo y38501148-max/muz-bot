@@ -96,7 +96,6 @@ async def auto_checkin_executor():
                         course["retries"] = course.get("retries", 0) + 1
                         changed = True
                         try:
-                            # Use regular execute sign in
                             res, auth_updated = await safe_execute_sign_in(acc, course["id"])
                             suc = (str(res.get("STATUS")) == "0" and str(res.get("result", {}).get("stuSignStatus")) == "1")
                             msg_err = res.get('ERRMSG', '')
