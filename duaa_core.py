@@ -131,39 +131,14 @@ async def perform_duaa_login(target_student_id, personal_password=None):
         except Exception as e:
             raise Exception(f"教务登录接口请求失败: {e}")
 
-async def fetch_server_timestamp(use_vpn, cookies, fake_time_str=None):
-    if fake_time_str:
-        try:
-            dt = datetime.strptime(fake_time_str, "%Y-%m-%d %H:%M:%S")
-            fake_ts = dt - timedelta(minutes=5)
-            return int(fake_ts.timestamp() * 1000)
-        except Exception:
-            pass
 
+async def execute_sign_in(use_vpn, cookies, uid, course_sched_id):
     urls = get_network_urls(use_vpn)
+
     async with httpx.AsyncClient(verify=False, cookies=cookies or {}) as client:
-        res = await client.get(urls["timestamp"], headers={"User-Agent": UA}, timeout=10)
+        res = await client.get(urls["timestamp"], timeout=10)
         res.raise_for_status()
-        return res.json().get("timestamp")
-
-async def execute_sign_in(use_vpn, session_id, cookies, uid, course_sched_id, fake_time_str=None):
-    urls = get_network_urls(use_vpn)
-
-    async with httpx.AsyncClient(verify=False, cookies=cookies or {}) as client:
-        if fake_time_str:
-            try:
-                dt = datetime.strptime(fake_time_str, "%Y-%m-%d %H:%M:%S")
-                server_ts = int((dt - timedelta(minutes=5)).timestamp() * 1000)
-            except Exception:
-                server_ts = None
-        else:
-            server_ts = None
-
-        if not server_ts:
-            res = await client.get(urls["timestamp"], timeout=10)
-            res.raise_for_status()
-            server_ts = res.json().get("timestamp")
-
+        server_ts = res.json().get("timestamp")
         if not server_ts:
             raise Exception("获取服务器时间戳失败")
 
@@ -204,23 +179,23 @@ async def safe_fetch_schedule(acc, today_str):
         sched = await _fetch()
         return sched, True
 
-async def safe_execute_sign_in(acc, course_id, fake_time_str=None):
+async def safe_execute_sign_in(acc, course_id):
     has_vpn = bool(acc.get('password'))
     uid, sess, cookies = acc.get('uid'), acc.get('session_id'), acc.get('cookies')
     auth_updated = False
-    
+
     if not uid or not sess:
         uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
         acc.update({"uid": uid, "session_id": sess, "cookies": cookies})
         auth_updated = True
-        
+
     try:
-        res_data = await execute_sign_in(has_vpn, sess, cookies, uid, course_id, fake_time_str)
+        res_data = await execute_sign_in(has_vpn, cookies, uid, course_id)
         if str(res_data.get("STATUS")) != "0" and ("登录" in res_data.get("ERRMSG", "") or "session" in res_data.get("ERRMSG", "").lower()):
             raise ValueError("Session expired")
         return res_data, auth_updated
     except Exception:
         uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
         acc.update({"uid": uid, "session_id": sess, "cookies": cookies})
-        res_data = await execute_sign_in(has_vpn, sess, cookies, uid, course_id, fake_time_str)
+        res_data = await execute_sign_in(has_vpn, cookies, uid, course_id)
         return res_data, True
