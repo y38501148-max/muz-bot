@@ -152,12 +152,10 @@ async def execute_sign_in(use_vpn, session_id, cookies, uid, course_sched_id, fa
     if not server_ts: raise Exception("获取服务器时间戳失败")
 
     async with httpx.AsyncClient(verify=False, cookies=cookies or {}) as client:
-        headers = {"Sessionid": session_id, "User-Agent": UA}
         res = await client.post(
             urls["sign"],
             params={"courseSchedId": course_sched_id, "timestamp": str(server_ts)},
             data={"id": uid},
-            headers=headers,
             timeout=10
         )
         res.raise_for_status()
