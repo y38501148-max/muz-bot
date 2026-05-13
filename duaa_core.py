@@ -155,7 +155,8 @@ async def execute_sign_in(use_vpn, session_id, cookies, uid, course_sched_id, fa
         headers = {"Sessionid": session_id, "User-Agent": UA}
         res = await client.post(
             urls["sign"],
-            params={"id": uid, "courseSchedId": course_sched_id, "timestamp": str(server_ts)},
+            params={"courseSchedId": course_sched_id, "timestamp": str(server_ts)},
+            data={"id": uid},
             headers=headers,
             timeout=10
         )
