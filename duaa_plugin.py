@@ -146,7 +146,7 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
         fake_time = target.get("classBeginTime") if is_su else None
 
         try:
-            res_data, auth_updated = await safe_execute_sign_in(acc, target["id"], fake_time)
+            res_data, auth_updated = await safe_execute_sign_in(acc, target["id"])
             if (str(res_data.get("STATUS")) == "0" and str(res_data.get("result", {}).get("stuSignStatus")) == "1"):
                 target["signStatus"] = "1"
                 await save_user_data(qq_id, data)

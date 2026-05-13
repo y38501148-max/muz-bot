@@ -131,21 +131,32 @@ async def perform_duaa_login(target_student_id, personal_password=None):
         except Exception as e:
             raise Exception(f"教务登录接口请求失败: {e}")
 
+async def fetch_server_timestamp(use_vpn, cookies, fake_time_str=None):
+    if fake_time_str:
+        try:
+            dt = datetime.strptime(fake_time_str, "%Y-%m-%d %H:%M:%S")
+            fake_ts = dt - timedelta(minutes=5)
+            return int(fake_ts.timestamp() * 1000)
+        except Exception:
+            pass
+
+    urls = get_network_urls(use_vpn)
+    async with httpx.AsyncClient(verify=False, cookies=cookies or {}) as client:
+        res = await client.get(urls["timestamp"], headers={"User-Agent": UA}, timeout=10)
+        res.raise_for_status()
+        return res.json().get("timestamp")
+
 async def execute_sign_in(use_vpn, session_id, cookies, uid, course_sched_id, fake_time_str=None):
     urls = get_network_urls(use_vpn)
-    
-    # 按照上一个有效版本的逻辑，生成当前时间戳 + 36000，不使用假时间或网络时间
-    ts = int(datetime.now().timestamp() * 1000) + 36000
+    server_ts = await fetch_server_timestamp(use_vpn, cookies, fake_time_str)
+    if not server_ts: raise Exception("获取服务器时间戳失败")
 
     async with httpx.AsyncClient(verify=False, cookies=cookies or {}) as client:
-        headers = {"SessionId": session_id, "User-Agent": UA}
-        # 恢复【核心修复】：id 必须放入 Body(FormData) 中，否则会报参数错误
-        # 而 courseSchedId 和 timestamp 留在 Query Params 中
+        headers = {"Sessionid": session_id, "User-Agent": UA}
         res = await client.post(
-            urls["sign"], 
-            params={"courseSchedId": course_sched_id, "timestamp": str(ts)},
-            data={"id": uid},
-            headers=headers, 
+            urls["sign"],
+            params={"id": uid, "courseSchedId": course_sched_id, "timestamp": str(server_ts)},
+            headers=headers,
             timeout=10
         )
         res.raise_for_status()
