@@ -144,13 +144,27 @@ async def handle_duaa(event: MessageEvent, args: Message = CommandArg()):
             except: pass
 
         try:
-            res_data, auth_updated = await safe_execute_sign_in(acc, target["id"])
+            date_str = datetime.now(TZ_BEIJING).strftime("%Y%m%d")
+            fresh_sched, sched_auth_updated = await safe_fetch_schedule(acc, date_str)
+            if fresh_sched:
+                old_times = {c["id"]: c.get("auto_sign_trigger_hm") for c in sched}
+                for c in fresh_sched:
+                    c["auto_sign_trigger_hm"] = old_times.get(c["id"], c.get("auto_sign_trigger_hm"))
+                acc["today_schedule"] = fresh_sched
+                acc["schedule_date"] = date_str
+                if idx < 0 or idx >= len(fresh_sched):
+                    await save_user_data(qq_id, data)
+                    await duaa_cmd.finish("⚠️ 课表已刷新，原序号不存在，请重新查看课表。")
+                sched = fresh_sched
+                target = sched[idx]
+
+            res_data, auth_updated = await safe_execute_sign_in(acc, target["id"], force_refresh=True)
             if (str(res_data.get("STATUS")) == "0" and str(res_data.get("result", {}).get("stuSignStatus")) == "1"):
                 target["signStatus"] = "1"
                 await save_user_data(qq_id, data)
                 await duaa_cmd.send(f"🎯 《{target['courseName']}》签到成功！")
             else:
-                if auth_updated: await save_user_data(qq_id, data)
+                if auth_updated or sched_auth_updated: await save_user_data(qq_id, data)
                 await duaa_cmd.send(f"❌ 签到失败：{res_data.get('ERRMSG', '未知错误')}")
         except Exception as e: await duaa_cmd.finish(f"❌ 执行错误: {e}")
 

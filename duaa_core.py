@@ -223,11 +223,14 @@ async def perform_duaa_login(target_student_id, personal_password=None):
             raise Exception(f"教务登录接口请求失败: {e}")
 
 
-async def execute_sign_in(use_vpn, cookies, uid, course_sched_id):
+async def execute_sign_in(use_vpn, cookies, uid, course_sched_id, session_id=None):
     urls = get_network_urls(use_vpn)
+    headers = {"User-Agent": UA}
+    if session_id:
+        headers["Sessionid"] = session_id
 
     async with httpx.AsyncClient(verify=False, cookies=cookies or {}) as client:
-        res = await client.get(urls["timestamp"], timeout=10)
+        res = await client.get(urls["timestamp"], headers=headers, timeout=10)
         res.raise_for_status()
         server_ts = res.json().get("timestamp")
         if not server_ts:
@@ -237,6 +240,7 @@ async def execute_sign_in(use_vpn, cookies, uid, course_sched_id):
             urls["sign"],
             params={"courseSchedId": course_sched_id, "timestamp": str(server_ts)},
             data={"id": uid},
+            headers=headers,
             timeout=10
         )
         res.raise_for_status()
@@ -276,7 +280,7 @@ def _is_auth_error_message(message: str):
         return False
     return any(token in text for token in ("登录", "session", "账号", "用户"))
 
-async def safe_execute_sign_in(acc, course_id):
+async def safe_execute_sign_in(acc, course_id, force_refresh=False):
     has_vpn = bool(acc.get('password'))
     uid, sess, cookies = acc.get('uid'), acc.get('session_id'), acc.get('cookies')
     auth_updated = False
@@ -286,18 +290,18 @@ async def safe_execute_sign_in(acc, course_id):
         acc.update({"uid": new_uid, "session_id": new_sess, "cookies": new_cookies})
         return new_uid, new_sess, new_cookies
 
-    if not uid or not sess:
+    if force_refresh or not uid or not sess:
         uid, sess, cookies = await _refresh_auth()
         auth_updated = True
 
     try:
-        res_data = await execute_sign_in(has_vpn, cookies, uid, course_id)
+        res_data = await execute_sign_in(has_vpn, cookies, uid, course_id, sess)
         if str(res_data.get("STATUS")) != "0" and _is_auth_error_message(res_data.get("ERRMSG", "")):
             uid, sess, cookies = await _refresh_auth()
-            res_data = await execute_sign_in(has_vpn, cookies, uid, course_id)
+            res_data = await execute_sign_in(has_vpn, cookies, uid, course_id, sess)
             return res_data, True
         return res_data, auth_updated
     except Exception:
         uid, sess, cookies = await _refresh_auth()
-        res_data = await execute_sign_in(has_vpn, cookies, uid, course_id)
+        res_data = await execute_sign_in(has_vpn, cookies, uid, course_id, sess)
         return res_data, True
