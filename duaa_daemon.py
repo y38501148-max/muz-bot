@@ -65,7 +65,8 @@ async def daily_sync():
                     acc["today_schedule"] = sched
                     acc["schedule_date"] = today_str
                     changed = True
-                except: pass
+                except Exception as e:
+                    print(f"Daily sync failed for {qq_id}/{alias}: {e}")
             
             if changed:
                 await save_user_data(qq_id, data)
@@ -92,19 +93,33 @@ async def auto_checkin_executor():
                 
                 for course in acc.get("today_schedule", []):
                     trig = course.get("auto_sign_trigger_hm")
+                    if (
+                        course.get("retries", 0) >= 30
+                        and str(course.get("signStatus")) != "1"
+                        and not course.get("terminal_reason")
+                        and not course.get("auth_recovery_done")
+                    ):
+                        course["retries"] = 0
+                        course["auth_recovery_done"] = True
+                        changed = True
+
                     if trig and now_hm >= trig and str(course.get("signStatus")) != "1" and course.get("retries", 0) < 30:
+                        is_first_try = course.get("retries", 0) == 0
                         course["retries"] = course.get("retries", 0) + 1
                         changed = True
                         try:
-                            res, auth_updated = await safe_execute_sign_in(acc, course["id"])
+                            res, auth_updated = await safe_execute_sign_in(acc, course["id"], force_refresh=is_first_try)
                             suc = (str(res.get("STATUS")) == "0" and str(res.get("result", {}).get("stuSignStatus")) == "1")
                             msg_err = res.get('ERRMSG', '')
                             
                             if suc or "已签到" in msg_err:
                                 course["signStatus"] = "1"
                                 await send_notify(group_id, f"🤖 自动签到成功！\n账号：[{alias}]\n课程：《{course.get('courseName')}》", qq_id)
-                            elif "结束" in msg_err or "不存在" in msg_err:
+                            elif "用户不存在" in msg_err or "账号" in msg_err or "登录" in msg_err or "session" in msg_err.lower():
+                                print(f"Auth-like sign in failure for {qq_id}/{alias} - {course.get('courseName')}: {msg_err}")
+                            elif "结束" in msg_err or ("课程" in msg_err and "不存在" in msg_err):
                                 course["retries"] = 99
+                                course["terminal_reason"] = "course_closed_or_missing"
                         except Exception as e:
                             print(f"Sign in error for {alias} - {course.get('courseName')}: {e}")
             
