@@ -270,23 +270,34 @@ async def safe_fetch_schedule(acc, today_str):
         sched = await _fetch()
         return sched, True
 
+def _is_auth_error_message(message: str):
+    text = (message or "").lower()
+    if "课程" in message and "不存在" in message:
+        return False
+    return any(token in text for token in ("登录", "session", "账号", "用户"))
+
 async def safe_execute_sign_in(acc, course_id):
     has_vpn = bool(acc.get('password'))
     uid, sess, cookies = acc.get('uid'), acc.get('session_id'), acc.get('cookies')
     auth_updated = False
 
+    async def _refresh_auth():
+        new_uid, new_sess, _, new_cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
+        acc.update({"uid": new_uid, "session_id": new_sess, "cookies": new_cookies})
+        return new_uid, new_sess, new_cookies
+
     if not uid or not sess:
-        uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
-        acc.update({"uid": uid, "session_id": sess, "cookies": cookies})
+        uid, sess, cookies = await _refresh_auth()
         auth_updated = True
 
     try:
         res_data = await execute_sign_in(has_vpn, cookies, uid, course_id)
-        if str(res_data.get("STATUS")) != "0" and ("登录" in res_data.get("ERRMSG", "") or "session" in res_data.get("ERRMSG", "").lower()):
-            raise ValueError("Session expired")
+        if str(res_data.get("STATUS")) != "0" and _is_auth_error_message(res_data.get("ERRMSG", "")):
+            uid, sess, cookies = await _refresh_auth()
+            res_data = await execute_sign_in(has_vpn, cookies, uid, course_id)
+            return res_data, True
         return res_data, auth_updated
     except Exception:
-        uid, sess, _, cookies = await perform_duaa_login(acc['student_id'], acc.get('password'))
-        acc.update({"uid": uid, "session_id": sess, "cookies": cookies})
+        uid, sess, cookies = await _refresh_auth()
         res_data = await execute_sign_in(has_vpn, cookies, uid, course_id)
         return res_data, True
