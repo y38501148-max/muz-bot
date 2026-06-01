@@ -7,6 +7,7 @@ import fcntl
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urljoin, urlparse, unquote
 
 BASE_DATA_DIR = Path("data/duaa")
 USER_DIR = BASE_DATA_DIR / "users"
@@ -16,12 +17,16 @@ TZ_BEIJING = timezone(timedelta(hours=8))
 
 UA = "Mozilla/5.0 (Linux; Android 13; M2012K11AC Build/TKQ1.220829.002; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/116.0.0.0 Mobile Safari/537.36 wxwork/4.1.22 MicroMessenger/7.0.1 NetType/WIFI Language/zh ColorScheme/Light"
 VPN_SERVICE_ID = "77726476706e69737468656265737421f9f44d9d342326526b0988e29d51367ba018"
+SIGNIN_MY_CENTER_URL = "https://iclass.buaa.edu.cn:8346/?type=jumpMyCenter"
+SIGNIN_LOGIN_REDIRECT_LIMIT = 8
 
 def get_network_urls(use_vpn):
     if use_vpn:
         base_8347 = f"https://d.buaa.edu.cn/https-8347/{VPN_SERVICE_ID}"
+        base_8346 = f"https://d.buaa.edu.cn/https-8346/{VPN_SERVICE_ID}"
         base_8081 = f"https://d.buaa.edu.cn/http-8081/{VPN_SERVICE_ID}" 
         return {
+            "my_center": f"{base_8346}/?type=jumpMyCenter",
             "login": f"{base_8347}/app/user/login.action",
             "schedule": f"{base_8347}/app/course/get_stu_course_sched.action",
             "timestamp": f"{base_8081}/app/common/get_timestamp.action",
@@ -29,6 +34,7 @@ def get_network_urls(use_vpn):
         }
     else:
         return {
+            "my_center": SIGNIN_MY_CENTER_URL,
             "login": "https://iclass.buaa.edu.cn:8347/app/user/login.action",
             "schedule": "https://iclass.buaa.edu.cn:8347/app/course/get_stu_course_sched.action",
             "timestamp": "http://iclass.buaa.edu.cn:8081/app/common/get_timestamp.action",
@@ -103,6 +109,88 @@ async def sso_login(client: httpx.AsyncClient, username, password):
     
     raise ValueError(f"SSO 穿透失败，最终停留地址: {final_url}")
 
+def extract_signin_login_name(url: str):
+    query = url.split("?", 1)[1].split("#", 1)[0] if "?" in url else ""
+    if not query:
+        return None
+    for part in query.split("&"):
+        key, _, value = part.partition("=")
+        if key.lower() == "loginname" and value:
+            return unquote(value)
+    return None
+
+def _known_vpn_to_plain_url(url: str):
+    parsed = urlparse(url)
+    if parsed.hostname != "d.buaa.edu.cn":
+        return url
+
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if len(segments) < 2 or segments[1] != VPN_SERVICE_ID:
+        return url
+
+    protocol_parts = segments[0].split("-", 1)
+    scheme = protocol_parts[0]
+    port = f":{protocol_parts[1]}" if len(protocol_parts) > 1 else ""
+    if len(segments) > 2:
+        path = "/" + "/".join(segments[2:])
+    else:
+        path = "/" if parsed.path.endswith("/") else ""
+    query = f"?{parsed.query}" if parsed.query else ""
+    fragment = f"#{parsed.fragment}" if parsed.fragment else ""
+    return f"{scheme}://iclass.buaa.edu.cn{port}{path}{query}{fragment}"
+
+def _plain_to_known_vpn_url(url: str):
+    parsed = urlparse(url)
+    if parsed.hostname != "iclass.buaa.edu.cn":
+        return url
+
+    if parsed.port:
+        protocol = f"{parsed.scheme}-{parsed.port}"
+    else:
+        protocol = parsed.scheme
+    path = parsed.path or ""
+    query = f"?{parsed.query}" if parsed.query else ""
+    fragment = f"#{parsed.fragment}" if parsed.fragment else ""
+    return f"https://d.buaa.edu.cn/{protocol}/{VPN_SERVICE_ID}{path}{query}{fragment}"
+
+def _resolve_signin_redirect_url(current_plain_url: str, location: str):
+    target = location.strip()
+    if not target:
+        return None
+    if target.startswith(("http://", "https://")):
+        return target
+    return urljoin(current_plain_url, target)
+
+async def resolve_signin_login_name(client: httpx.AsyncClient, use_vpn: bool):
+    urls = get_network_urls(use_vpn)
+    current_request_url = urls["my_center"]
+    current_plain_url = SIGNIN_MY_CENTER_URL
+
+    for _ in range(SIGNIN_LOGIN_REDIRECT_LIMIT):
+        res = await client.get(current_request_url, timeout=15, follow_redirects=False)
+
+        for candidate in (str(res.url), res.headers.get("Location", "")):
+            login_name = extract_signin_login_name(_known_vpn_to_plain_url(candidate))
+            if login_name:
+                return login_name
+
+        location = res.headers.get("Location")
+        if res.status_code < 300 or res.status_code >= 400 or not location:
+            break
+
+        if use_vpn and location.startswith(("/http/", "/https/", "/http-", "/https-")):
+            next_url = f"https://d.buaa.edu.cn{location}"
+        else:
+            next_url = _resolve_signin_redirect_url(current_plain_url, location)
+        next_plain_url = _known_vpn_to_plain_url(next_url)
+        if use_vpn and urlparse(next_plain_url).hostname == "iclass.buaa.edu.cn":
+            current_request_url = _plain_to_known_vpn_url(next_plain_url)
+        else:
+            current_request_url = next_plain_url
+        current_plain_url = next_plain_url
+
+    raise ValueError("无法从 iClass MyCenter 跳转链解析 loginName。")
+
 async def perform_duaa_login(target_student_id, personal_password=None):
     use_vpn = bool(personal_password)
     urls = get_network_urls(use_vpn)
@@ -110,10 +198,13 @@ async def perform_duaa_login(target_student_id, personal_password=None):
     async with httpx.AsyncClient(verify=False, follow_redirects=True, headers={"User-Agent": UA}) as client:
         if use_vpn:
             await sso_login(client, target_student_id, personal_password)
+            app_login_name = await resolve_signin_login_name(client, use_vpn=True)
+        else:
+            app_login_name = target_student_id
             
         try:
             login_params = {
-                "phone": target_student_id,
+                "phone": app_login_name,
                 "password": "",
                 "userLevel": "1",
                 "verificationType": "2",
