@@ -22,6 +22,7 @@ DEFAULT_CONFIG = {
     "QUALITY": "medium",
     "OUTPUT_FORMAT": "png",
     "MODERATION": "auto",
+    "RESPONSE_FORMAT": "",
     "TIMEOUT_SECONDS": 300,
     "RETRY_ATTEMPTS": 2,
     "PROXY_URL": "",
@@ -109,14 +110,10 @@ def extract_api_error(response: httpx.Response) -> str:
     return json.dumps(data, ensure_ascii=False)[:300]
 
 
-async def fetch_image_from_url(client: httpx.AsyncClient, url: str) -> bytes:
+def image_segment_from_url(url: str) -> MessageSegment:
     if url.startswith("data:image/") and ";base64," in url:
-        return base64.b64decode(url.split(";base64,", 1)[1])
-
-    response = await client.get(url)
-    if response.status_code >= 400:
-        raise RuntimeError(f"图片 URL 下载失败：HTTP {response.status_code}")
-    return response.content
+        return MessageSegment.image(base64.b64decode(url.split(";base64,", 1)[1]))
+    return MessageSegment.image(url)
 
 
 def build_client_kwargs(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -148,7 +145,7 @@ def format_request_error(error: httpx.RequestError, url: str) -> str:
     )
 
 
-async def call_gpt_image2(prompt: str, config: Dict[str, Any]) -> bytes:
+async def call_gpt_image2(prompt: str, config: Dict[str, Any]) -> MessageSegment:
     api_key = str(get_config_value(config, "API_KEY") or "").strip()
     if not api_key:
         raise ValueError(f"请先在 {CONFIG_PATH} 里填写 API_KEY")
@@ -165,6 +162,7 @@ async def call_gpt_image2(prompt: str, config: Dict[str, Any]) -> bytes:
         "quality": get_config_value(config, "QUALITY") or "medium",
         "output_format": get_config_value(config, "OUTPUT_FORMAT") or "png",
         "moderation": get_config_value(config, "MODERATION") or "auto",
+        "response_format": get_config_value(config, "RESPONSE_FORMAT"),
     }
     payload = {k: v for k, v in payload.items() if v not in (None, "")}
 
@@ -188,11 +186,12 @@ async def call_gpt_image2(prompt: str, config: Dict[str, Any]) -> bytes:
                 first_image = images[0]
                 b64_json = first_image.get("b64_json") if isinstance(first_image, dict) else None
                 if b64_json:
-                    return base64.b64decode(b64_json)
+                    return MessageSegment.image(base64.b64decode(b64_json))
 
                 image_url = first_image.get("url") if isinstance(first_image, dict) else None
                 if image_url:
-                    return await fetch_image_from_url(client, image_url)
+                    logger.info("GPT Image2 返回图片 URL，将直接交给 NapCat 发送。")
+                    return image_segment_from_url(image_url)
             except httpx.RequestError as e:
                 logger.warning(
                     f"GPT Image2 网络请求失败，第 {attempt}/{retry_attempts} 次：{format_request_error(e, generation_url)}"
@@ -231,10 +230,10 @@ async def handle_imagegen(bot: Bot, event: MessageEvent, args: Message = Command
     await imagegen_cmd.send("正在调用 GPT Image2 生成图片，请稍候...")
 
     try:
-        image_bytes = await call_gpt_image2(prompt, config)
+        image_message = await call_gpt_image2(prompt, config)
         await bot.send_group_msg(
             group_id=target_group_id,
-            message=MessageSegment.image(image_bytes),
+            message=image_message,
         )
     except httpx.RequestError as e:
         logger.opt(exception=True).error("GPT Image2 网络请求失败")
