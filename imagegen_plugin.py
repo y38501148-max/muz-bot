@@ -1,5 +1,6 @@
 import base64
 import asyncio
+import contextlib
 import inspect
 import json
 from pathlib import Path
@@ -179,12 +180,15 @@ def get_approval_timeout(config: Dict[str, Any]) -> float:
 
 def build_approval_message(prompt: str, requester_id: str, target_group_id: int, timeout_seconds: float) -> Message:
     prompt_preview = prompt if len(prompt) <= 500 else f"{prompt[:500]}..."
+    full_prompt = build_image_prompt(prompt)
+    full_prompt_preview = full_prompt if len(full_prompt) <= 1000 else f"{full_prompt[:1000]}..."
     return (
         "收到新的生图请求，请回复 yes 同意调用 GPT Image2，或回复 no 改为由你发送目标图片。"
         + f"\n回复 no 后，请在 {int(timeout_seconds)} 秒内继续发送图片。"
         + f"\n请求群：{target_group_id}"
         + f"\n请求人：{requester_id}"
         + f"\n提示词：{prompt_preview}"
+        + f"\n\n完整提示词：\n{full_prompt_preview}"
     )
 
 
@@ -196,14 +200,32 @@ def extract_image_message(message: Message) -> Message:
     return image_message
 
 
-def build_forwarded_image_message(prompt: str, requester_id: str, approver_id: int, image_message: Message) -> Message:
+def build_result_message(prompt: str, requester_id: str, image_message: Message) -> Message:
     return (
         MessageSegment.at(requester_id)
-        + "\n图片已由审批人提供。"
-        + f"\n审批人：{approver_id}"
+        + "\n图片生成成功！"
         + f"\nprompt: {prompt}\n"
         + image_message
     )
+
+
+async def wait_with_100s_reminder(bot: Bot, approver_id: int, future: asyncio.Future, timeout_seconds: float, reminder_message: str):
+    async def remind():
+        await asyncio.sleep(timeout_seconds - 100)
+        if not future.done():
+            await bot.send_private_msg(user_id=approver_id, message=reminder_message)
+
+    reminder_task = None
+    if timeout_seconds > 100:
+        reminder_task = asyncio.create_task(remind())
+
+    try:
+        return await asyncio.wait_for(future, timeout=timeout_seconds)
+    finally:
+        if reminder_task:
+            reminder_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reminder_task
 
 
 async def wait_for_image_approval(bot: Bot, event: MessageEvent, prompt: str, target_group_id: int, config: Dict[str, Any]) -> str:
@@ -237,7 +259,13 @@ async def wait_for_image_approval(bot: Bot, event: MessageEvent, prompt: str, ta
         )
 
         try:
-            approved = await asyncio.wait_for(decision_future, timeout=timeout_seconds)
+            approved = await wait_with_100s_reminder(
+                bot,
+                approver_id,
+                decision_future,
+                timeout_seconds,
+                f"生图请求审批还剩 100 秒。若不回复，将自动同意调用 GPT Image2。\n请求群：{target_group_id}",
+            )
         except asyncio.TimeoutError:
             logger.info(f"生图审批等待 {timeout_seconds} 秒未收到回复，视为同意调用 API。")
             return "generate"
@@ -252,7 +280,13 @@ async def wait_for_image_approval(bot: Bot, event: MessageEvent, prompt: str, ta
         )
 
         try:
-            image_message = await asyncio.wait_for(image_future, timeout=timeout_seconds)
+            image_message = await wait_with_100s_reminder(
+                bot,
+                approver_id,
+                image_future,
+                timeout_seconds,
+                f"目标图片等待还剩 100 秒。请尽快发送要转发到群 {target_group_id} 的图片，否则本次请求将超时。",
+            )
         except asyncio.TimeoutError:
             await bot.send_group_msg(
                 group_id=target_group_id,
@@ -265,7 +299,7 @@ async def wait_for_image_approval(bot: Bot, event: MessageEvent, prompt: str, ta
 
         await bot.send_group_msg(
             group_id=target_group_id,
-            message=build_forwarded_image_message(prompt, event.get_user_id(), approver_id, image_message),
+            message=build_result_message(prompt, event.get_user_id(), image_message),
         )
         return "image_forwarded"
     finally:
@@ -385,6 +419,11 @@ async def handle_imagegen(bot: Bot, event: MessageEvent, args: Message = Command
     except Exception as e:
         await imagegen_cmd.finish(str(e))
 
+    await bot.send_group_msg(
+        group_id=target_group_id,
+        message=MessageSegment.at(event.get_user_id()) + "\n生成图片中...",
+    )
+
     try:
         approved = await wait_for_image_approval(bot, event, prompt, target_group_id, config)
     except Exception as e:
@@ -404,12 +443,7 @@ async def handle_imagegen(bot: Bot, event: MessageEvent, args: Message = Command
 
     try:
         image_message = await call_gpt_image2(build_image_prompt(prompt), config)
-        result_message = (
-            MessageSegment.at(event.get_user_id())
-            + "\n图片生成成功！\n"
-            + f"prompt: {prompt}\n"
-            + image_message
-        )
+        result_message = build_result_message(prompt, event.get_user_id(), image_message)
         await bot.send_group_msg(
             group_id=target_group_id,
             message=result_message,
