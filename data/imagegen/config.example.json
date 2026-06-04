@@ -1,6 +1,9 @@
 {
     "API_KEY": "",
+    "GPT55_API_KEY": "",
     "BASE_URL": "https://api.openai.com/v1",
+    "GPT55_MODEL": "gpt-5.5",
+    "PROMPT_OPTIMIZATION_ENABLED": true,
     "MODEL": "gpt-image-2",
     "TARGET_GROUP_ID": "",
     "SIZE": "1024x1024",

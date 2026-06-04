@@ -15,7 +15,10 @@ CONFIG_PATH = BASE_DIR / "config.json"
 
 DEFAULT_CONFIG = {
     "API_KEY": "",
+    "GPT55_API_KEY": "",
     "BASE_URL": "https://api.openai.com/v1",
+    "GPT55_MODEL": "gpt-5.5",
+    "PROMPT_OPTIMIZATION_ENABLED": True,
     "MODEL": "gpt-image-2",
     "TARGET_GROUP_ID": "",
     "SIZE": "1024x1024",
@@ -73,13 +76,26 @@ def parse_bool(value, default: bool = True) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "y"}
 
 
-def build_generation_url(base_url: str) -> str:
+def normalize_v1_base_url(base_url: str) -> str:
     base = (base_url or DEFAULT_CONFIG["BASE_URL"]).strip().rstrip("/")
+    for suffix in ("/images/generations", "/chat/completions"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
     if base.endswith("/images/generations"):
         return base
     if not base.endswith("/v1"):
         base = f"{base}/v1"
+    return base
+
+
+def build_generation_url(base_url: str) -> str:
+    base = normalize_v1_base_url(base_url)
     return f"{base}/images/generations"
+
+
+def build_chat_completions_url(base_url: str) -> str:
+    base = normalize_v1_base_url(base_url)
+    return f"{base}/chat/completions"
 
 
 def resolve_target_group_id(event: MessageEvent, config: Dict[str, Any]) -> int:
@@ -143,6 +159,73 @@ def format_request_error(error: httpx.RequestError, url: str) -> str:
         f"请求地址：{url}\n"
         "请检查 BASE_URL 是否能从服务器访问；如果服务器不能直连 OpenAI，请配置 PROXY_URL 或使用可访问的中转 BASE_URL。"
     )
+
+
+def extract_chat_content(data: Dict[str, Any]) -> str:
+    choices = data.get("choices", [])
+    if not choices:
+        raise RuntimeError("GPT-5.5 没有返回可用的提示词优化结果")
+
+    message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("text"):
+                parts.append(str(item["text"]))
+        return "\n".join(parts).strip()
+    raise RuntimeError("GPT-5.5 返回格式中没有 message.content")
+
+
+async def optimize_prompt_for_image(prompt: str, config: Dict[str, Any]) -> str:
+    if not parse_bool(get_config_value(config, "PROMPT_OPTIMIZATION_ENABLED"), True):
+        return prompt
+
+    api_key = str(get_config_value(config, "GPT55_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError(f"请先在 {CONFIG_PATH} 里填写 GPT55_API_KEY")
+
+    base_url = str(get_config_value(config, "BASE_URL") or DEFAULT_CONFIG["BASE_URL"]).strip()
+    chat_url = build_chat_completions_url(base_url)
+    model = get_config_value(config, "GPT55_MODEL") or "gpt-5.5"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "你是 GPT-Image2 提示词优化器。把用户原始需求改写成更适合 GPT-Image2 的高质量生图提示词。"
+                    "保留用户的核心意图、主体、文字要求和限制；补足构图、风格、光线、材质、画面质量等有帮助的信息。"
+                    "只输出最终提示词本身，不要解释，不要使用 Markdown，不要输出多方案。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"原始提示词：{prompt}",
+            },
+        ],
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(**build_client_kwargs(config)) as client:
+        try:
+            response = await client.post(chat_url, headers=headers, json=payload)
+        except httpx.RequestError as e:
+            raise RuntimeError(format_request_error(e, chat_url)) from e
+
+    if response.status_code >= 400:
+        raise RuntimeError(f"GPT-5.5 提示词优化失败：HTTP {response.status_code}，{extract_api_error(response)}")
+
+    optimized_prompt = extract_chat_content(response.json())
+    if not optimized_prompt:
+        raise RuntimeError("GPT-5.5 返回了空提示词")
+    return optimized_prompt
 
 
 async def call_gpt_image2(prompt: str, config: Dict[str, Any]) -> MessageSegment:
@@ -227,14 +310,15 @@ async def handle_imagegen(bot: Bot, event: MessageEvent, args: Message = Command
     except Exception as e:
         await imagegen_cmd.finish(str(e))
 
-    await imagegen_cmd.send("正在调用 GPT Image2 生成图片，请稍候...")
+    await imagegen_cmd.send("正在优化提示词并调用 GPT Image2 生成图片，请稍候...")
 
     try:
-        image_message = await call_gpt_image2(prompt, config)
+        optimized_prompt = await optimize_prompt_for_image(prompt, config)
+        image_message = await call_gpt_image2(optimized_prompt, config)
         result_message = (
             MessageSegment.at(event.get_user_id())
             + "\n图片生成成功！\n"
-            + f"prompt: {prompt}\n"
+            + f"prompt: {optimized_prompt}\n"
             + image_message
         )
         await bot.send_group_msg(
