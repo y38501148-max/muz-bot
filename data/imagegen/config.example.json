@@ -1,0 +1,11 @@
+{
+    "API_KEY": "",
+    "BASE_URL": "https://api.openai.com/v1",
+    "MODEL": "gpt-image-2",
+    "TARGET_GROUP_ID": "",
+    "SIZE": "1024x1024",
+    "QUALITY": "medium",
+    "OUTPUT_FORMAT": "png",
+    "MODERATION": "auto",
+    "TIMEOUT_SECONDS": 180
+}
