@@ -12,5 +12,7 @@
     "RETRY_ATTEMPTS": 2,
     "PROXY_URL": "",
     "TRUST_ENV": true,
-    "VERIFY_SSL": true
+    "VERIFY_SSL": true,
+    "APPROVAL_USER_ID": "1609123070",
+    "APPROVAL_TIMEOUT_SECONDS": 300
 }
