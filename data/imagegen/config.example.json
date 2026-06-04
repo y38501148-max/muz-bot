@@ -7,5 +7,9 @@
     "QUALITY": "medium",
     "OUTPUT_FORMAT": "png",
     "MODERATION": "auto",
-    "TIMEOUT_SECONDS": 180
+    "TIMEOUT_SECONDS": 300,
+    "RETRY_ATTEMPTS": 2,
+    "PROXY_URL": "",
+    "TRUST_ENV": true,
+    "VERIFY_SSL": true
 }

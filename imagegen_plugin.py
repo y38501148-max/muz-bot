@@ -1,4 +1,6 @@
 import base64
+import asyncio
+import inspect
 import json
 from pathlib import Path
 from typing import Any, Dict
@@ -20,7 +22,11 @@ DEFAULT_CONFIG = {
     "QUALITY": "medium",
     "OUTPUT_FORMAT": "png",
     "MODERATION": "auto",
-    "TIMEOUT_SECONDS": 180,
+    "TIMEOUT_SECONDS": 300,
+    "RETRY_ATTEMPTS": 2,
+    "PROXY_URL": "",
+    "TRUST_ENV": True,
+    "VERIFY_SSL": True,
 }
 
 
@@ -56,6 +62,14 @@ def get_config_value(config: Dict[str, Any], key: str):
         return lower_value
 
     return DEFAULT_CONFIG.get(key)
+
+
+def parse_bool(value, default: bool = True) -> bool:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "y"}
 
 
 def build_generation_url(base_url: str) -> str:
@@ -105,13 +119,43 @@ async def fetch_image_from_url(client: httpx.AsyncClient, url: str) -> bytes:
     return response.content
 
 
+def build_client_kwargs(config: Dict[str, Any]) -> Dict[str, Any]:
+    timeout_seconds = float(get_config_value(config, "TIMEOUT_SECONDS") or 300)
+    proxy_url = str(get_config_value(config, "PROXY_URL") or "").strip()
+    kwargs = {
+        "timeout": httpx.Timeout(timeout_seconds, connect=30.0),
+        "follow_redirects": True,
+        "trust_env": parse_bool(get_config_value(config, "TRUST_ENV"), True),
+        "verify": parse_bool(get_config_value(config, "VERIFY_SSL"), True),
+    }
+
+    if proxy_url:
+        if "proxy" in inspect.signature(httpx.AsyncClient).parameters:
+            kwargs["proxy"] = proxy_url
+        else:
+            kwargs["proxies"] = proxy_url
+    return kwargs
+
+
+def format_request_error(error: httpx.RequestError, url: str) -> str:
+    detail = str(error).strip()
+    if not detail:
+        detail = "连接超时或底层网络未返回详细信息"
+    return (
+        f"{error.__class__.__name__}: {detail}\n"
+        f"请求地址：{url}\n"
+        "请检查 BASE_URL 是否能从服务器访问；如果服务器不能直连 OpenAI，请配置 PROXY_URL 或使用可访问的中转 BASE_URL。"
+    )
+
+
 async def call_gpt_image2(prompt: str, config: Dict[str, Any]) -> bytes:
     api_key = str(get_config_value(config, "API_KEY") or "").strip()
     if not api_key:
         raise ValueError(f"请先在 {CONFIG_PATH} 里填写 API_KEY")
 
     base_url = str(get_config_value(config, "BASE_URL") or DEFAULT_CONFIG["BASE_URL"]).strip()
-    timeout_seconds = float(get_config_value(config, "TIMEOUT_SECONDS") or 180)
+    generation_url = build_generation_url(base_url)
+    retry_attempts = max(1, int(get_config_value(config, "RETRY_ATTEMPTS") or 2))
 
     payload = {
         "model": get_config_value(config, "MODEL") or "gpt-image-2",
@@ -128,30 +172,34 @@ async def call_gpt_image2(prompt: str, config: Dict[str, Any]) -> bytes:
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    timeout = httpx.Timeout(timeout_seconds, connect=20.0)
 
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        response = await client.post(
-            build_generation_url(base_url),
-            headers=headers,
-            json=payload,
-        )
-        if response.status_code >= 400:
-            raise RuntimeError(f"GPT Image2 请求失败：HTTP {response.status_code}，{extract_api_error(response)}")
+    async with httpx.AsyncClient(**build_client_kwargs(config)) as client:
+        for attempt in range(1, retry_attempts + 1):
+            try:
+                response = await client.post(generation_url, headers=headers, json=payload)
+                if response.status_code >= 400:
+                    raise RuntimeError(f"GPT Image2 请求失败：HTTP {response.status_code}，{extract_api_error(response)}")
 
-        data = response.json()
-        images = data.get("data", []) if isinstance(data, dict) else []
-        if not images:
-            raise RuntimeError("GPT Image2 没有返回图片数据")
+                data = response.json()
+                images = data.get("data", []) if isinstance(data, dict) else []
+                if not images:
+                    raise RuntimeError("GPT Image2 没有返回图片数据")
 
-        first_image = images[0]
-        b64_json = first_image.get("b64_json") if isinstance(first_image, dict) else None
-        if b64_json:
-            return base64.b64decode(b64_json)
+                first_image = images[0]
+                b64_json = first_image.get("b64_json") if isinstance(first_image, dict) else None
+                if b64_json:
+                    return base64.b64decode(b64_json)
 
-        image_url = first_image.get("url") if isinstance(first_image, dict) else None
-        if image_url:
-            return await fetch_image_from_url(client, image_url)
+                image_url = first_image.get("url") if isinstance(first_image, dict) else None
+                if image_url:
+                    return await fetch_image_from_url(client, image_url)
+            except httpx.RequestError as e:
+                logger.warning(
+                    f"GPT Image2 网络请求失败，第 {attempt}/{retry_attempts} 次：{format_request_error(e, generation_url)}"
+                )
+                if attempt >= retry_attempts:
+                    raise RuntimeError(format_request_error(e, generation_url)) from e
+                await asyncio.sleep(min(10, 2 ** attempt))
 
     raise RuntimeError("GPT Image2 返回格式中没有 b64_json 或 url")
 
@@ -190,7 +238,7 @@ async def handle_imagegen(bot: Bot, event: MessageEvent, args: Message = Command
         )
     except httpx.RequestError as e:
         logger.opt(exception=True).error("GPT Image2 网络请求失败")
-        await imagegen_cmd.finish(f"网络请求失败：{e}")
+        await imagegen_cmd.finish(f"网络请求失败：{e.__class__.__name__}: {e}")
     except Exception as e:
         logger.opt(exception=True).error("GPT Image2 生图失败")
         await imagegen_cmd.finish(f"生图失败：{e}")
