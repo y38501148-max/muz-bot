@@ -231,9 +231,15 @@ async def handle_imagegen(bot: Bot, event: MessageEvent, args: Message = Command
 
     try:
         image_message = await call_gpt_image2(prompt, config)
+        result_message = (
+            MessageSegment.at(event.get_user_id())
+            + "\n图片生成成功！\n"
+            + f"prompt: {prompt}\n"
+            + image_message
+        )
         await bot.send_group_msg(
             group_id=target_group_id,
-            message=image_message,
+            message=result_message,
         )
     except httpx.RequestError as e:
         logger.opt(exception=True).error("GPT Image2 网络请求失败")
