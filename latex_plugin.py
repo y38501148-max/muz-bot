@@ -1,3 +1,4 @@
+import asyncio
 import re
 from io import BytesIO
 from pathlib import Path
@@ -284,7 +285,7 @@ def render_latex_png_with_matplotlib(lines: list[str]) -> bytes:
             plt.close(fig)
 
 
-def render_latex_png(formula: str) -> bytes:
+async def render_latex_png(formula: str) -> bytes:
     lines = split_latex_formula(formula)
     try:
         from katex_renderer import (
@@ -294,13 +295,13 @@ def render_latex_png(formula: str) -> bytes:
         )
     except ImportError:
         logger.warning("KaTeX 渲染器导入失败，回退到 Matplotlib。")
-        return render_latex_png_with_matplotlib(lines)
+        return await asyncio.to_thread(render_latex_png_with_matplotlib, lines)
 
     try:
-        return render_katex_png(lines)
+        return await render_katex_png(lines)
     except KatexEngineUnavailable as e:
         logger.warning(f"KaTeX 渲染器不可用，回退到 Matplotlib：{e}")
-        return render_latex_png_with_matplotlib(lines)
+        return await asyncio.to_thread(render_latex_png_with_matplotlib, lines)
     except KatexRenderError:
         raise
 
@@ -318,7 +319,7 @@ async def handle_latex(bot: Bot, event: MessageEvent, args: Message = CommandArg
         await latex_cmd.finish("用法：引用一条 LaTeX 公式消息后发送 /lt，也可以直接发送 /lt E=mc^2")
 
     try:
-        image_bytes = render_latex_png(formula)
+        image_bytes = await render_latex_png(formula)
     except RuntimeError as e:
         await latex_cmd.finish(str(e))
     except Exception as e:

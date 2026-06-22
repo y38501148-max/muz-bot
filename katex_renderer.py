@@ -193,9 +193,9 @@ def build_html(lines: list[str]) -> str:
 """
 
 
-def render_katex_png(lines: list[str]) -> bytes:
+async def render_katex_png(lines: list[str]) -> bytes:
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.async_api import async_playwright
     except ImportError as e:
         raise KatexEngineUnavailable("Python 依赖 playwright 未安装") from e
 
@@ -205,29 +205,29 @@ def render_katex_png(lines: list[str]) -> bytes:
         temp_path = Path(temp_file.name)
 
     try:
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True, args=["--no-sandbox"])
             try:
-                page = browser.new_page(
+                page = await browser.new_page(
                     viewport={"width": 1600, "height": 1200},
                     device_scale_factor=2,
                 )
-                page.goto(temp_path.resolve().as_uri(), wait_until="networkidle")
-                error = page.evaluate("document.body.dataset.error || ''")
+                await page.goto(temp_path.resolve().as_uri(), wait_until="networkidle")
+                error = await page.evaluate("document.body.dataset.error || ''")
                 if error:
                     raise KatexRenderError(error)
 
                 locator = page.locator("#content")
-                box = locator.bounding_box()
+                box = await locator.bounding_box()
                 if box:
-                    page.set_viewport_size(
+                    await page.set_viewport_size(
                         {
                             "width": max(400, ceil(box["width"]) + 80),
                             "height": max(240, ceil(box["height"]) + 80),
                         }
                     )
-                return locator.screenshot(type="png", omit_background=True)
+                return await locator.screenshot(type="png", omit_background=True)
             finally:
-                browser.close()
+                await browser.close()
     finally:
         temp_path.unlink(missing_ok=True)
