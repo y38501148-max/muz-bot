@@ -71,7 +71,7 @@ def build_html(lines: list[str]) -> str:
     html, body {{
       margin: 0;
       padding: 0;
-      background: transparent;
+      background: #fff;
     }}
     #content {{
       display: inline-flex;
@@ -80,7 +80,7 @@ def build_html(lines: list[str]) -> str:
       gap: 22px;
       padding: 22px 28px;
       color: #000;
-      background: transparent;
+      background: #fff;
       font-size: 30px;
       line-height: 1.9;
       font-family: 'LocalCJK', 'Noto Sans CJK SC', 'Source Han Sans SC',
@@ -227,7 +227,7 @@ async def render_katex_png(lines: list[str]) -> bytes:
                             "height": max(240, ceil(box["height"]) + 80),
                         }
                     )
-                return await locator.screenshot(type="png", omit_background=True)
+                return await locator.screenshot(type="png", omit_background=False)
             finally:
                 await browser.close()
     finally:

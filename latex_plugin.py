@@ -259,7 +259,7 @@ def render_latex_png_with_matplotlib(lines: list[str]) -> bytes:
         }
     ):
         fig = plt.figure(figsize=(fig_width, fig_height), dpi=220)
-        fig.patch.set_alpha(0.0)
+        fig.patch.set_facecolor("white")
 
         try:
             for index, line in enumerate(lines):
@@ -278,9 +278,10 @@ def render_latex_png_with_matplotlib(lines: list[str]) -> bytes:
             fig.savefig(
                 buffer,
                 format="png",
-                transparent=True,
+                transparent=False,
                 bbox_inches="tight",
                 pad_inches=0.25,
+                facecolor="white",
             )
             return buffer.getvalue()
         finally:
