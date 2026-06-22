@@ -191,6 +191,8 @@ def find_latex_break_position(text: str, max_chars: int) -> int:
             continue
         if depth != 0 or index < MIN_LATEX_BREAK_CHARS:
             continue
+        if char == "=" and index > 0 and text[index - 1] == "&":
+            continue
         if char in "=+-,;，。；、：":
             last_break = index
 

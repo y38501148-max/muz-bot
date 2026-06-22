@@ -172,7 +172,8 @@ def build_html(lines: list[str]) -> str:
       }} else if (containsCjk(line)) {{
         div.textContent = line;
       }} else {{
-        katex.render(line, div, {{
+        const math = line.includes("&") ? "\\\\begin{{aligned}}" + line + "\\\\end{{aligned}}" : line;
+        katex.render(math, div, {{
           displayMode: true,
           throwOnError: true,
           strict: "warn",
