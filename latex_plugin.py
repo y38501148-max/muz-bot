@@ -1,5 +1,6 @@
 import re
 from io import BytesIO
+from pathlib import Path
 
 from nonebot import logger, on_command
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment
@@ -15,28 +16,50 @@ MAX_FIG_WIDTH = 12.0
 FIG_WIDTH_PER_CHAR = 0.13
 FIG_HEIGHT_PER_LINE = 0.85
 FIG_HEIGHT_PADDING = 1.2
-MARKDOWN_LATEX_PATTERNS = (
-    re.compile(r"```(?:latex|tex|math)?\s*\n?(.*?)```", re.IGNORECASE | re.DOTALL),
-    re.compile(r"\$\$(.*?)\$\$", re.DOTALL),
-    re.compile(r"\\\[(.*?)\\\]", re.DOTALL),
-    re.compile(r"\\\((.*?)\\\)", re.DOTALL),
-    re.compile(r"(?<!\\)\$(?!\$)(.*?)(?<!\\)\$(?!\$)", re.DOTALL),
+CODE_FENCE_PATTERN = re.compile(r"```(?:latex|tex|math)?\s*\n?(.*?)```", re.IGNORECASE | re.DOTALL)
+DISPLAY_MATH_PATTERN = re.compile(r"\$\$(.*?)\$\$", re.DOTALL)
+BRACKET_MATH_PATTERN = re.compile(r"\\\[(.*?)\\\]", re.DOTALL)
+PAREN_MATH_PATTERN = re.compile(r"\\\((.*?)\\\)", re.DOTALL)
+INLINE_MATH_PATTERN = re.compile(r"(?<!\\)\$(?!\$)(.*?)(?<!\\)\$(?!\$)", re.DOTALL)
+CJK_FONT_PATHS = (
+    "yuruka.otf",
+    "data/pjsk/yuruka.otf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+)
+CJK_FONT_FAMILIES = (
+    "Noto Sans CJK SC",
+    "Noto Sans CJK JP",
+    "Source Han Sans SC",
+    "Source Han Serif SC",
+    "WenQuanYi Zen Hei",
+    "PingFang SC",
+    "Microsoft YaHei",
+    "SimHei",
+    "Arial Unicode MS",
+    "DejaVu Sans",
 )
 
 
-def extract_markdown_latex(text: str) -> str:
-    for pattern in MARKDOWN_LATEX_PATTERNS:
-        matches = [match.strip() for match in pattern.findall(text) if match.strip()]
-        if matches:
-            return "\n".join(matches)
-    return ""
+def normalize_markdown_latex(text: str) -> str:
+    formula = text.strip()
+
+    code_match = CODE_FENCE_PATTERN.fullmatch(formula)
+    if code_match:
+        return code_match.group(1).strip()
+
+    formula = CODE_FENCE_PATTERN.sub(lambda match: f"\n{match.group(1).strip()}\n", formula)
+    formula = DISPLAY_MATH_PATTERN.sub(lambda match: f"\n${match.group(1).strip()}$\n", formula)
+    formula = BRACKET_MATH_PATTERN.sub(lambda match: f"\n${match.group(1).strip()}$\n", formula)
+    formula = PAREN_MATH_PATTERN.sub(lambda match: f"${match.group(1).strip()}$", formula)
+    formula = re.sub(r"\n{2,}", "\n", formula)
+    return formula.strip()
 
 
 def normalize_latex_source(text: str) -> str:
-    formula = text.strip()
-    markdown_formula = extract_markdown_latex(formula)
-    if markdown_formula:
-        formula = markdown_formula
+    formula = normalize_markdown_latex(text)
 
     wrappers = (
         ("```latex", "```"),
@@ -110,6 +133,47 @@ def wrap_for_mathtext(formula: str) -> str:
     return formula if formula.startswith("$") and formula.endswith("$") else f"${formula}$"
 
 
+def contains_cjk(text: str) -> bool:
+    return any(
+        "\u3400" <= char <= "\u9fff"
+        or "\uf900" <= char <= "\ufaff"
+        or "\u3040" <= char <= "\u30ff"
+        for char in text
+    )
+
+
+def format_render_line(line: str) -> str:
+    if INLINE_MATH_PATTERN.search(line) or contains_cjk(line):
+        return line
+    return wrap_for_mathtext(line)
+
+
+def resolve_text_font_families():
+    from matplotlib import font_manager
+
+    font_families = []
+    for font_path in CJK_FONT_PATHS:
+        path = Path(font_path)
+        if not path.exists():
+            continue
+        try:
+            font_manager.fontManager.addfont(str(path))
+            font_name = font_manager.FontProperties(fname=str(path)).get_name()
+        except Exception:
+            continue
+        font_families.append(font_name)
+
+    available_font_names = {font.name for font in font_manager.fontManager.ttflist}
+    font_families.extend(
+        font_family
+        for font_family in CJK_FONT_FAMILIES
+        if font_family in available_font_names
+    )
+    if "DejaVu Sans" not in font_families:
+        font_families.append("DejaVu Sans")
+    return list(dict.fromkeys(font_families))
+
+
 def find_latex_break_position(text: str, max_chars: int) -> int:
     depth = 0
     last_break = -1
@@ -126,7 +190,7 @@ def find_latex_break_position(text: str, max_chars: int) -> int:
             continue
         if depth != 0 or index < MIN_LATEX_BREAK_CHARS:
             continue
-        if char in "=+-,;":
+        if char in "=+-,;，。；、：":
             last_break = index
 
     return last_break
@@ -183,8 +247,15 @@ def render_latex_png(formula: str) -> bytes:
 
     lines = split_latex_formula(formula)
     fig_width, fig_height = calculate_figure_size(lines)
+    font_families = resolve_text_font_families()
 
-    with matplotlib.rc_context({"font.family": "serif", "mathtext.fontset": "cm", "mathtext.default": "it"}):
+    with matplotlib.rc_context(
+        {
+            "font.family": font_families,
+            "mathtext.fontset": "cm",
+            "mathtext.default": "it",
+        }
+    ):
         fig = plt.figure(figsize=(fig_width, fig_height), dpi=220)
         fig.patch.set_alpha(0.0)
 
@@ -194,10 +265,10 @@ def render_latex_png(formula: str) -> bytes:
                 fig.text(
                     0.5,
                     y_position,
-                    wrap_for_mathtext(line),
+                    format_render_line(line),
                     fontsize=24,
                     color="black",
-                    fontfamily="serif",
+                    fontfamily=font_families,
                     ha="center",
                     va="center",
                 )
