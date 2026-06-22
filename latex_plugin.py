@@ -236,7 +236,7 @@ def format_latex_error(error: Exception) -> str:
     return f"LaTeX 渲染失败，请检查公式语法。\n错误信息：\n{detail}"
 
 
-def render_latex_png(formula: str) -> bytes:
+def render_latex_png_with_matplotlib(lines: list[str]) -> bytes:
     try:
         import matplotlib
 
@@ -245,7 +245,6 @@ def render_latex_png(formula: str) -> bytes:
     except ImportError as e:
         raise RuntimeError("服务器缺少 matplotlib 依赖，请先安装项目依赖后再使用 /lt。") from e
 
-    lines = split_latex_formula(formula)
     fig_width, fig_height = calculate_figure_size(lines)
     font_families = resolve_text_font_families()
 
@@ -283,6 +282,27 @@ def render_latex_png(formula: str) -> bytes:
             return buffer.getvalue()
         finally:
             plt.close(fig)
+
+
+def render_latex_png(formula: str) -> bytes:
+    lines = split_latex_formula(formula)
+    try:
+        from katex_renderer import (
+            KatexEngineUnavailable,
+            KatexRenderError,
+            render_katex_png,
+        )
+    except ImportError:
+        logger.warning("KaTeX 渲染器导入失败，回退到 Matplotlib。")
+        return render_latex_png_with_matplotlib(lines)
+
+    try:
+        return render_katex_png(lines)
+    except KatexEngineUnavailable as e:
+        logger.warning(f"KaTeX 渲染器不可用，回退到 Matplotlib：{e}")
+        return render_latex_png_with_matplotlib(lines)
+    except KatexRenderError:
+        raise
 
 
 @latex_cmd.handle()

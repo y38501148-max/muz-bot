@@ -10,6 +10,7 @@ dependencies = [
     "Pillow",
     "httpx",
     "matplotlib",
+    "playwright",
 ]
 
 [tool.nonebot]
