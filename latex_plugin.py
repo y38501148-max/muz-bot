@@ -87,7 +87,7 @@ def render_latex_png(formula: str) -> bytes:
     except ImportError as e:
         raise RuntimeError("服务器缺少 matplotlib 依赖，请先安装项目依赖后再使用 /lt。") from e
 
-    with matplotlib.rc_context({"font.family": "serif", "mathtext.fontset": "dejavuserif"}):
+    with matplotlib.rc_context({"font.family": "serif", "mathtext.fontset": "cm", "mathtext.default": "it"}):
         fig = plt.figure(figsize=(8, 2), dpi=220)
         fig.patch.set_alpha(0.0)
 
