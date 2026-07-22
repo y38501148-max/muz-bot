@@ -4,21 +4,14 @@ import tempfile
 from math import ceil
 from pathlib import Path
 
+from latex_fonts import CJK_FONT_PATHS, CSS_CJK_FONT_STACK
+
 
 BASE_DIR = Path(__file__).resolve().parent
 KATEX_DIR = BASE_DIR / "vendor" / "katex"
 KATEX_CSS = KATEX_DIR / "katex.min.css"
 KATEX_JS = KATEX_DIR / "katex.min.js"
 INLINE_MATH_PATTERN = re.compile(r"(?<!\\)\$(?!\$)(.*?)(?<!\\)\$(?!\$)", re.DOTALL)
-CJK_FONT_PATHS = (
-    BASE_DIR / "yuruka.otf",
-    BASE_DIR / "data" / "pjsk" / "yuruka.otf",
-    Path.home() / "yuruka.otf",
-    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
-    Path("/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc"),
-    Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
-    Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
-)
 
 
 class KatexEngineUnavailable(RuntimeError):
@@ -42,7 +35,7 @@ def build_font_face_css() -> str:
         return ""
     return (
         "@font-face {"
-        "font-family: 'LocalCJK';"
+        "font-family: 'LatexCJK';"
         f"src: url('{font_uri}') format('opentype');"
         "font-display: swap;"
         "}"
@@ -83,9 +76,7 @@ def build_html(lines: list[str]) -> str:
       background: #fff;
       font-size: 30px;
       line-height: 1.9;
-      font-family: 'LocalCJK', 'Noto Sans CJK SC', 'Source Han Sans SC',
-        'WenQuanYi Zen Hei', 'PingFang SC', 'Microsoft YaHei', 'SimHei',
-        'Arial Unicode MS', sans-serif;
+      font-family: 'LatexCJK', {CSS_CJK_FONT_STACK}, serif;
       white-space: pre-wrap;
     }}
     .line {{

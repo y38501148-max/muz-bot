@@ -1,11 +1,12 @@
 import asyncio
 import re
 from io import BytesIO
-from pathlib import Path
 
 from nonebot import logger, on_command
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment
 from nonebot.params import CommandArg
+
+from latex_fonts import CJK_FONT_FAMILIES, CJK_FONT_PATHS
 
 
 latex_cmd = on_command("lt", aliases={"latex", "公式"}, priority=5, block=True)
@@ -22,28 +23,6 @@ DISPLAY_MATH_PATTERN = re.compile(r"\$\$(.*?)\$\$", re.DOTALL)
 BRACKET_MATH_PATTERN = re.compile(r"\\\[(.*?)\\\]", re.DOTALL)
 PAREN_MATH_PATTERN = re.compile(r"\\\((.*?)\\\)", re.DOTALL)
 INLINE_MATH_PATTERN = re.compile(r"(?<!\\)\$(?!\$)(.*?)(?<!\\)\$(?!\$)", re.DOTALL)
-CJK_FONT_PATHS = (
-    "yuruka.otf",
-    "data/pjsk/yuruka.otf",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-)
-CJK_FONT_FAMILIES = (
-    "Noto Sans CJK SC",
-    "Noto Sans CJK JP",
-    "Source Han Sans SC",
-    "Source Han Serif SC",
-    "WenQuanYi Zen Hei",
-    "PingFang SC",
-    "Microsoft YaHei",
-    "SimHei",
-    "Arial Unicode MS",
-    "DejaVu Sans",
-)
-
-
 def normalize_markdown_latex(text: str) -> str:
     formula = text.strip()
 
@@ -154,12 +133,11 @@ def resolve_text_font_families():
 
     font_families = []
     for font_path in CJK_FONT_PATHS:
-        path = Path(font_path)
-        if not path.exists():
+        if not font_path.exists():
             continue
         try:
-            font_manager.fontManager.addfont(str(path))
-            font_name = font_manager.FontProperties(fname=str(path)).get_name()
+            font_manager.fontManager.addfont(str(font_path))
+            font_name = font_manager.FontProperties(fname=str(font_path)).get_name()
         except Exception:
             continue
         font_families.append(font_name)
@@ -170,8 +148,8 @@ def resolve_text_font_families():
         for font_family in CJK_FONT_FAMILIES
         if font_family in available_font_names
     )
-    if "DejaVu Sans" not in font_families:
-        font_families.append("DejaVu Sans")
+    if "DejaVu Serif" not in font_families:
+        font_families.append("DejaVu Serif")
     return list(dict.fromkeys(font_families))
 
 
