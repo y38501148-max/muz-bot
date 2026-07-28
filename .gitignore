@@ -8,3 +8,6 @@ buaa-api-repo
 tmp_BUAASignTool
 tmp_singledog_duaa
 data/imagegen/config.json
+data/x_monitor/config.json
+data/x_monitor/state.json
+.coverage

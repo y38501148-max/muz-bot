@@ -1,0 +1,10 @@
+{
+  "USERNAME": "thsottiaux",
+  "KEYWORDS": [
+    "reset"
+  ],
+  "PROXY_URL": "http://127.0.0.1:7890",
+  "POLL_MINUTES": 10,
+  "LOOKBACK_HOURS": 24,
+  "PAGE_TIMEOUT_SECONDS": 30
+}
