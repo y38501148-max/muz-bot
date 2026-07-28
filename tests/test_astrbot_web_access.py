@@ -8,6 +8,7 @@ from astrbot_plugin_muz_gateway.web_access import (
     extract_user_urls,
     html_to_readable_text,
     parse_bing_results,
+    parse_bing_rss_results,
     parse_duckduckgo_results,
     safe_search_subject,
     should_fetch_user_urls,
@@ -74,6 +75,24 @@ class WebAccessTests(unittest.TestCase):
                     "title": "示例 页面",
                     "url": "https://example.com/a",
                     "snippet": "一段 摘要",
+                }
+            ],
+        )
+
+    def test_parses_bing_rss_results_with_snippets(self):
+        source = (
+            "<rss><channel><item><title>示例 页面</title>"
+            "<link>https://example.com/a</link>"
+            "<description>一段 &amp; 摘要</description></item></channel></rss>"
+        )
+
+        self.assertEqual(
+            parse_bing_rss_results(source),
+            [
+                {
+                    "title": "示例 页面",
+                    "url": "https://example.com/a",
+                    "snippet": "一段 & 摘要",
                 }
             ],
         )

@@ -499,13 +499,79 @@ def parse_bing_results(value: str, limit: int = 5) -> List[dict]:
     return results
 
 
+def parse_bing_rss_results(value: str, limit: int = 5) -> List[dict]:
+    results = []
+    for block in re.findall(
+        r"<item>(.*?)</item>",
+        value,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        title_match = re.search(
+            r"<title>(.*?)</title>",
+            block,
+            re.IGNORECASE | re.DOTALL,
+        )
+        url_match = re.search(
+            r"<link>(.*?)</link>",
+            block,
+            re.IGNORECASE | re.DOTALL,
+        )
+        snippet_match = re.search(
+            r"<description>(.*?)</description>",
+            block,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not title_match or not url_match:
+            continue
+        title = re.sub(
+            r"<[^>]+>",
+            "",
+            html.unescape(title_match.group(1)),
+        ).strip()
+        url = html.unescape(url_match.group(1)).strip()
+        snippet = (
+            re.sub(
+                r"<[^>]+>",
+                "",
+                html.unescape(snippet_match.group(1)),
+            ).strip()
+            if snippet_match
+            else ""
+        )
+        if title and url.startswith(("http://", "https://")):
+            results.append(
+                {
+                    "title": title[:300],
+                    "url": url[:2_048],
+                    "snippet": " ".join(snippet.split())[:800],
+                }
+            )
+        if len(results) >= limit:
+            break
+    return results
+
+
 async def search_web(query: object) -> str:
     normalized = " ".join(str(query or "").split())[:200]
     if not normalized:
         raise ValueError("搜索词不能为空")
-    search_url = f"https://www.bing.com/search?q={quote_plus(normalized)}&setlang=zh-cn"
-    _, content = await _get_public_response(search_url, max_bytes=MAX_PAGE_BYTES)
-    results = parse_bing_results(
+    search_url = (
+        f"https://www.bing.com/search?q={quote_plus(normalized)}&ensearch=1&format=rss"
+    )
+    content = b""
+    last_error = None
+    for _ in range(2):
+        try:
+            _, content = await _get_public_response(
+                search_url,
+                max_bytes=MAX_PAGE_BYTES,
+            )
+            break
+        except httpx.RequestError as error:
+            last_error = error
+    if not content:
+        raise ValueError("搜索服务连接失败") from last_error
+    results = parse_bing_rss_results(
         content.decode("utf-8", errors="replace"),
         limit=5,
     )
