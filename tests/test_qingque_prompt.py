@@ -27,6 +27,8 @@ class QingquePromptTests(unittest.TestCase):
             "绝大多数回复完全不提",
             "网页搜索",
             "视频",
+            "每次回复最多 30 个字符",
+            "避免客服腔、说明书腔和 AI 模板感",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, prompt)
