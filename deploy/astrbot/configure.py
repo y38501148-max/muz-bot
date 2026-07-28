@@ -213,8 +213,8 @@ def _atomic_write_json(path: Path, value: Dict) -> None:
 
 
 def configure(config_path: Path, providers_path: Path) -> None:
-    current = json.loads(config_path.read_text(encoding="utf-8"))
-    provider_specs = json.loads(providers_path.read_text(encoding="utf-8"))
+    current = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    provider_specs = json.loads(providers_path.read_text(encoding="utf-8-sig"))
     updated = build_astrbot_config(current, provider_specs)
     _atomic_write_json(config_path, updated)
 

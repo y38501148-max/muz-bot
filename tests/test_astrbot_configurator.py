@@ -1,7 +1,11 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from deploy.astrbot.configure import (
     build_astrbot_config,
+    configure,
     normalize_openai_base_url,
 )
 
@@ -159,6 +163,39 @@ class AstrBotConfiguratorTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             build_astrbot_config({}, specs)
+
+    def test_configure_accepts_astrbot_utf8_bom_config(self):
+        provider_specs = [
+            {
+                "id": provider_id,
+                "api_base": f"https://{index}.example/v1",
+                "model": f"model-{index}",
+                "key_env": f"KEY_{index}",
+            }
+            for index, provider_id in enumerate(
+                ("muz-primary", "muz-secondary", "muz-tertiary"),
+                start=1,
+            )
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "cmd_config.json"
+            providers_path = Path(directory) / "providers.json"
+            config_path.write_text(
+                json.dumps({"config_version": 2}),
+                encoding="utf-8-sig",
+            )
+            providers_path.write_text(
+                json.dumps(provider_specs),
+                encoding="utf-8",
+            )
+
+            configure(config_path, providers_path)
+
+            result = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                result["provider_settings"]["default_provider_id"],
+                "muz-primary",
+            )
 
 
 if __name__ == "__main__":
