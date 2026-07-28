@@ -48,7 +48,8 @@ muz-primary -> muz-secondary -> muz-tertiary
 ```
 
 配置器将 `request_max_retries` 设为 1，避免第一路故障时长时间阻塞；
-每个 Provider 可以使用不同 `api_base`、模型和 Key。`api_base`
+每个 Provider 可以使用不同 `api_base`、模型、Key 和可选 `proxy`。
+`proxy` 支持 HTTP(S) 与 SOCKS5 地址；留空时保持直连。`api_base`
 既可填写顶级 URL，也可填写 `/v1`、`/v1/chat/completions` 或
 `/v1/responses` 完整地址；配置器会统一规范为 OpenAI SDK 所需的
 `/v1` 基础地址。当前三个已验证 Provider 均支持 Chat Completions，

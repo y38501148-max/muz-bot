@@ -7,6 +7,7 @@ from deploy.astrbot.configure import (
     build_astrbot_config,
     configure,
     normalize_openai_base_url,
+    normalize_proxy_url,
 )
 
 
@@ -54,6 +55,7 @@ class AstrBotConfiguratorTests(unittest.TestCase):
                 "model": "model-a",
                 "key_env": "MUZ_LLM_PRIMARY_KEY",
                 "reasoning_effort": "high",
+                "proxy": "http://192.168.16.1:17890",
             },
             {
                 "id": "muz-secondary",
@@ -86,6 +88,11 @@ class AstrBotConfiguratorTests(unittest.TestCase):
             providers["muz-primary"]["custom_extra_body"],
             {"reasoning_effort": "high"},
         )
+        self.assertEqual(
+            providers["muz-primary"]["proxy"],
+            "http://192.168.16.1:17890",
+        )
+        self.assertEqual(providers["muz-tertiary"]["proxy"], "")
         self.assertEqual(
             result["provider_settings"]["default_provider_id"],
             "muz-primary",
@@ -163,6 +170,49 @@ class AstrBotConfiguratorTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             build_astrbot_config({}, specs)
+
+    def test_rejects_unsupported_proxy_scheme(self):
+        specs = [
+            {
+                "id": provider_id,
+                "api_base": f"https://{index}.example/v1",
+                "model": f"model-{index}",
+                "key_env": f"KEY_{index}",
+                "proxy": "file:///tmp/proxy" if index == 1 else "",
+            }
+            for index, provider_id in enumerate(
+                ("muz-primary", "muz-secondary", "muz-tertiary"),
+                start=1,
+            )
+        ]
+
+        with self.assertRaisesRegex(ValueError, "proxy"):
+            build_astrbot_config({}, specs)
+
+    def test_normalizes_supported_proxy_urls(self):
+        self.assertEqual(
+            normalize_proxy_url("HTTP://192.168.16.1:17890/"),
+            "http://192.168.16.1:17890",
+        )
+        self.assertEqual(
+            normalize_proxy_url("socks5://proxy.internal:1080"),
+            "socks5://proxy.internal:1080",
+        )
+        self.assertEqual(normalize_proxy_url(""), "")
+
+    def test_rejects_unsafe_or_malformed_proxy_urls(self):
+        invalid_urls = (
+            "http://user:secret@proxy.internal:8080",
+            "http://:7890",
+            "http://proxy.internal:notaport",
+            "http://proxy host:8080",
+            "http://proxy.internal:8080/unexpected",
+        )
+        for proxy_url in invalid_urls:
+            subtest = self.subTest(proxy_url=proxy_url)
+            rejects_proxy = self.assertRaisesRegex(ValueError, "proxy")
+            with subtest, rejects_proxy:
+                normalize_proxy_url(proxy_url)
 
     def test_configure_accepts_astrbot_utf8_bom_config(self):
         provider_specs = [

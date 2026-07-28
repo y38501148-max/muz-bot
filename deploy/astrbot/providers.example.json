@@ -4,20 +4,23 @@
     "api_base": "https://primary.example.com/v1",
     "model": "model-primary",
     "key_env": "MUZ_LLM_PRIMARY_KEY",
-    "reasoning_effort": "high"
+    "reasoning_effort": "high",
+    "proxy": ""
   },
   {
     "id": "muz-secondary",
     "api_base": "https://secondary.example.com/v1",
     "model": "model-secondary",
     "key_env": "MUZ_LLM_SECONDARY_KEY",
-    "reasoning_effort": "high"
+    "reasoning_effort": "high",
+    "proxy": ""
   },
   {
     "id": "muz-tertiary",
     "api_base": "https://tertiary.example.com/v1",
     "model": "model-tertiary",
     "key_env": "MUZ_LLM_TERTIARY_KEY",
-    "reasoning_effort": "max"
+    "reasoning_effort": "max",
+    "proxy": ""
   }
 ]

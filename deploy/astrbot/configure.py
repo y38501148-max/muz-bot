@@ -20,6 +20,7 @@ MANAGED_PROVIDER_IDS = (
 )
 ENV_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+PROXY_SCHEMES = frozenset({"http", "https", "socks5", "socks5h"})
 
 
 def normalize_openai_base_url(value: object) -> str:
@@ -48,6 +49,41 @@ def normalize_openai_base_url(value: object) -> str:
     ).geturl()
 
 
+def normalize_proxy_url(value: object) -> str:
+    """Validate an optional HTTP(S) or SOCKS proxy URL."""
+    proxy_url = str(value or "").strip()
+    if not proxy_url:
+        return ""
+    try:
+        parsed = urlparse(proxy_url)
+        proxy_port = parsed.port
+    except ValueError as error:
+        raise ValueError("proxy 包含无效端口或主机") from error
+    proxy_hostname = parsed.hostname or ""
+    if (
+        parsed.scheme.casefold() not in PROXY_SCHEMES
+        or not parsed.netloc
+        or not proxy_hostname
+        or any(character.isspace() for character in proxy_hostname)
+    ):
+        raise ValueError("proxy 必须是合法的 HTTP(S) 或 SOCKS5 地址")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("proxy 不允许内嵌凭据，避免 AstrBot 日志泄漏")
+    if proxy_port is not None and not 1 <= proxy_port <= 65535:
+        raise ValueError("proxy 端口必须在 1 到 65535 之间")
+    if parsed.query or parsed.fragment:
+        raise ValueError("proxy 不允许包含查询参数或片段")
+    if parsed.path not in {"", "/"}:
+        raise ValueError("proxy 不允许包含路径")
+    return parsed._replace(
+        scheme=parsed.scheme.casefold(),
+        path="",
+        params="",
+        query="",
+        fragment="",
+    ).geturl()
+
+
 def _validate_provider_specs(provider_specs: object) -> List[Dict]:
     if not isinstance(provider_specs, list) or len(provider_specs) != 3:
         raise ValueError("必须提供恰好三个 API Provider 配置")
@@ -61,6 +97,7 @@ def _validate_provider_specs(provider_specs: object) -> List[Dict]:
         model = str(raw.get("model") or "").strip()
         key_env = str(raw.get("key_env") or "").strip()
         reasoning_effort = str(raw.get("reasoning_effort") or "").strip().casefold()
+        proxy = normalize_proxy_url(raw.get("proxy"))
         parsed_url = urlparse(api_base)
         if not identifier or not model:
             raise ValueError(f"第 {index} 个 Provider 缺少 id 或 model")
@@ -85,6 +122,7 @@ def _validate_provider_specs(provider_specs: object) -> List[Dict]:
                 "model": model,
                 "key_env": key_env,
                 "reasoning_effort": reasoning_effort,
+                "proxy": proxy,
             }
         )
     if tuple(item["id"] for item in normalized) != MANAGED_PROVIDER_IDS:
@@ -105,7 +143,7 @@ def _provider_config(spec: Dict) -> Dict:
         "api_base": spec["api_base"],
         "model": spec["model"],
         "timeout": 120,
-        "proxy": "",
+        "proxy": spec["proxy"],
         "custom_headers": {},
         "custom_extra_body": (
             {"reasoning_effort": spec["reasoning_effort"]}
