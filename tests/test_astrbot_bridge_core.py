@@ -10,11 +10,14 @@ from astrbot_bridge_core import (
     AstrBotApiError,
     AstrBotClient,
     BridgeConfig,
+    ConversationInFlightGate,
     ConversationRateLimiter,
     JsonSessionStore,
     build_conversation_identity,
     consume_sse_lines,
+    is_status_command,
     load_bridge_config,
+    should_passively_reply,
 )
 
 
@@ -37,6 +40,7 @@ class BridgeConfigTests(unittest.TestCase):
 
         self.assertFalse(config.enabled)
         self.assertEqual(config.base_url, "http://127.0.0.1:6185")
+        self.assertEqual(config.passive_trigger_probability, 0.42)
 
     def test_enabled_config_requires_api_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -53,18 +57,89 @@ class BridgeConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.json"
             path.write_text(
-                json.dumps(
-                    {
-                        "ASTRBOT_BASE_URL": (
-                            "https://secret@example.com"
-                        )
-                    }
-                ),
+                json.dumps({"ASTRBOT_BASE_URL": ("https://secret@example.com")}),
                 encoding="utf-8",
             )
 
             with self.assertRaisesRegex(ValueError, "凭据"):
                 load_bridge_config(path)
+
+    def test_base_url_rejects_external_plain_http(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps({"ASTRBOT_BASE_URL": "http://astrbot.example.com"}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "HTTPS"):
+                load_bridge_config(path)
+
+    def test_passive_probability_is_configurable_and_bounded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps({"PASSIVE_TRIGGER_PROBABILITY": 0.25}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                load_bridge_config(path).passive_trigger_probability,
+                0.25,
+            )
+
+            path.write_text(
+                json.dumps({"PASSIVE_TRIGGER_PROBABILITY": 1.01}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "0 到 1"):
+                load_bridge_config(path)
+
+
+class TriggerPolicyTests(unittest.TestCase):
+    def test_ai_command_only_keeps_chinese_status_action(self):
+        self.assertTrue(is_status_command(" 状态 "))
+        self.assertFalse(is_status_command("status"))
+        self.assertFalse(is_status_command("你好"))
+        self.assertFalse(is_status_command(""))
+
+    def test_passive_trigger_uses_probability_and_skips_direct_messages(self):
+        self.assertTrue(
+            should_passively_reply(
+                "今天吃什么？",
+                directed=False,
+                probability=0.42,
+                sample=0.419,
+            )
+        )
+        self.assertFalse(
+            should_passively_reply(
+                "今天吃什么？",
+                directed=False,
+                probability=0.42,
+                sample=0.42,
+            )
+        )
+        self.assertFalse(
+            should_passively_reply(
+                "引用机器人",
+                directed=True,
+                probability=1,
+                sample=0,
+            )
+        )
+
+    def test_passive_trigger_skips_empty_and_command_messages(self):
+        for message in ("", "   ", "/ai 状态", " /help"):
+            with self.subTest(message=message):
+                self.assertFalse(
+                    should_passively_reply(
+                        message,
+                        directed=False,
+                        probability=1,
+                        sample=0,
+                    )
+                )
 
 
 class ConversationIdentityTests(unittest.TestCase):
@@ -81,9 +156,9 @@ class ConversationIdentityTests(unittest.TestCase):
 
         self.assertEqual(group, same_group_other_user)
         self.assertEqual(group.key, "group:778899")
-        self.assertEqual(group.username, "qq-group-778899")
+        self.assertEqual(group.username, "qq-group")
         self.assertEqual(private.key, "private:10001")
-        self.assertEqual(private.username, "qq-user-10001")
+        self.assertEqual(private.username, "qq-user")
 
 
 class ConversationRateLimiterTests(unittest.TestCase):
@@ -94,6 +169,19 @@ class ConversationRateLimiterTests(unittest.TestCase):
         self.assertEqual(limiter.check("group:2", now=11), 0)
         self.assertAlmostEqual(limiter.check("group:1", now=12), 1)
         self.assertEqual(limiter.check("group:1", now=13), 0)
+
+
+class ConversationInFlightGateTests(unittest.TestCase):
+    def test_rejects_same_conversation_and_global_overflow_without_queueing(self):
+        gate = ConversationInFlightGate(max_concurrent=2)
+
+        self.assertTrue(gate.try_enter("group:1"))
+        self.assertFalse(gate.try_enter("group:1"))
+        self.assertTrue(gate.try_enter("group:2"))
+        self.assertFalse(gate.try_enter("group:3"))
+
+        gate.leave("group:1")
+        self.assertTrue(gate.try_enter("group:3"))
 
 
 class JsonSessionStoreTests(unittest.TestCase):
@@ -185,9 +273,7 @@ class AstrBotClientTests(unittest.TestCase):
             timeout_seconds=10,
             max_concurrent=2,
         )
-        http_client = httpx.AsyncClient(
-            transport=httpx.MockTransport(handler)
-        )
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         client = AstrBotClient(config, http_client=http_client)
 
         result = asyncio.run(
@@ -213,9 +299,7 @@ class AstrBotClientTests(unittest.TestCase):
             timeout_seconds=10,
             max_concurrent=2,
         )
-        http_client = httpx.AsyncClient(
-            transport=httpx.MockTransport(handler)
-        )
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         client = AstrBotClient(config, http_client=http_client)
 
         with self.assertRaises(AstrBotApiError) as raised:

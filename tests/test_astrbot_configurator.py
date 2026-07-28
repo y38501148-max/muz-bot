@@ -1,9 +1,40 @@
 import unittest
 
-from deploy.astrbot.configure import build_astrbot_config
+from deploy.astrbot.configure import (
+    build_astrbot_config,
+    normalize_openai_base_url,
+)
 
 
 class AstrBotConfiguratorTests(unittest.TestCase):
+    def test_top_level_and_endpoint_urls_become_openai_v1_base(self):
+        cases = {
+            "https://api.example.com": "https://api.example.com/v1",
+            "https://api.example.com/": "https://api.example.com/v1",
+            "https://api.example.com/v1": "https://api.example.com/v1",
+            (
+                "https://api.example.com/v1/chat/completions"
+            ): "https://api.example.com/v1",
+            ("https://api.example.com/v1/responses"): "https://api.example.com/v1",
+            ("https://api.example.com/chat/completions"): "https://api.example.com/v1",
+            "https://api.example.com/responses": "https://api.example.com/v1",
+        }
+        for raw_url, expected in cases.items():
+            with self.subTest(raw_url=raw_url):
+                self.assertEqual(normalize_openai_base_url(raw_url), expected)
+
+    def test_plain_http_is_only_allowed_for_loopback(self):
+        self.assertEqual(
+            normalize_openai_base_url("http://127.0.0.1:8000"),
+            "http://127.0.0.1:8000/v1",
+        )
+        self.assertEqual(
+            normalize_openai_base_url("http://localhost:8000/v1"),
+            "http://localhost:8000/v1",
+        )
+        with self.assertRaisesRegex(ValueError, "HTTPS"):
+            normalize_openai_base_url("http://api.example.com")
+
     def test_adds_three_ordered_providers_and_preserves_unrelated_config(self):
         current = {
             "config_version": 2,
@@ -18,6 +49,7 @@ class AstrBotConfiguratorTests(unittest.TestCase):
                 "api_base": "https://one.example/v1",
                 "model": "model-a",
                 "key_env": "MUZ_LLM_PRIMARY_KEY",
+                "reasoning_effort": "high",
             },
             {
                 "id": "muz-secondary",
@@ -36,10 +68,7 @@ class AstrBotConfiguratorTests(unittest.TestCase):
         result = build_astrbot_config(current, provider_specs)
 
         self.assertEqual(result["platform"], [{"id": "leave-me-alone"}])
-        self.assertTrue(result["provider_settings"]["web_search"])
-        providers = {
-            item["id"]: item for item in result["provider"]
-        }
+        providers = {item["id"]: item for item in result["provider"]}
         self.assertIn("existing-provider", providers)
         self.assertEqual(
             providers["muz-primary"]["key"],
@@ -48,6 +77,10 @@ class AstrBotConfiguratorTests(unittest.TestCase):
         self.assertEqual(
             providers["muz-primary"]["api_base"],
             "https://one.example/v1",
+        )
+        self.assertEqual(
+            providers["muz-primary"]["custom_extra_body"],
+            {"reasoning_effort": "high"},
         )
         self.assertEqual(
             result["provider_settings"]["default_provider_id"],
@@ -61,6 +94,15 @@ class AstrBotConfiguratorTests(unittest.TestCase):
             result["provider_settings"]["context_limit_reached_strategy"],
             "truncate_by_turns",
         )
+        self.assertFalse(result["provider_settings"]["web_search"])
+        self.assertEqual(
+            result["provider_settings"]["computer_use_runtime"],
+            "none",
+        )
+        self.assertFalse(
+            result["provider_settings"]["proactive_capability"]["add_cron_tools"]
+        )
+        self.assertFalse(result["subagent_orchestrator"]["main_enable"])
         self.assertEqual(
             providers["muz-primary"]["max_context_tokens"],
             60_975,

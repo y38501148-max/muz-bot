@@ -21,6 +21,8 @@ Compose 默认固定到已验证的官方多架构镜像 digest，避免 `latest
 cp deploy/astrbot/.env.example deploy/astrbot/.env
 cp deploy/astrbot/providers.example.json deploy/astrbot/providers.json
 cp data/astrbot_bridge/config.example.json data/astrbot_bridge/config.json
+chmod 600 deploy/astrbot/.env deploy/astrbot/providers.json \
+  data/astrbot_bridge/config.json
 ```
 
 ## 启动与配置
@@ -35,6 +37,9 @@ docker compose -f deploy/astrbot/compose.yml restart astrbot
 
 在 AstrBot WebUI 的设置中创建仅含 `chat` scope 的 API Key，填入
 `data/astrbot_bridge/config.json`，并将 `ENABLED` 改为 `true`。
+部署脚本还会关闭 Web Search、文件提取、Computer Use、Cron 工具和
+Subagent；Gateway 在最终 LLM hook 中把工具集强制清空，群用户只能
+进行纯文本对话。
 
 三 Provider 的调用顺序固定为：
 
@@ -43,11 +48,17 @@ muz-primary -> muz-secondary -> muz-tertiary
 ```
 
 配置器将 `request_max_retries` 设为 1，避免第一路故障时长时间阻塞；
-每个 Provider 可以使用不同 `api_base`、模型和 Key。
+每个 Provider 可以使用不同 `api_base`、模型和 Key。`api_base`
+既可填写顶级 URL，也可填写 `/v1`、`/v1/chat/completions` 或
+`/v1/responses` 完整地址；配置器会统一规范为 OpenAI SDK 所需的
+`/v1` 基础地址。当前三个已验证 Provider 均支持 Chat Completions，
+因此 AstrBot 会自动补全 `/chat/completions`；`/responses` 在这里
+作为可识别的输入端点，用于反推出同一个基础 URL，并不切换
+AstrBot 的 Provider 类型。
 
 ## 提示词位置
 
-AstrBot 首次加载插件后会自动创建空文件：
+AstrBot 首次加载插件后会用青雀人格模板创建：
 
 ```text
 /root/astrbot/data/plugin_data/astrbot_plugin_muz_gateway/system_prompt.txt

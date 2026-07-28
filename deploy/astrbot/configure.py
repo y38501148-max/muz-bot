@@ -19,6 +19,33 @@ MANAGED_PROVIDER_IDS = (
     "muz-tertiary",
 )
 ENV_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def normalize_openai_base_url(value: object) -> str:
+    """Turn a host or full OpenAI endpoint into an SDK-compatible base URL."""
+    raw_url = str(value or "").strip()
+    parsed = urlparse(raw_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("api_base 不是 HTTP(S) 地址")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("api_base 不允许内嵌凭据")
+    if parsed.scheme == "http" and parsed.hostname not in LOOPBACK_HOSTS:
+        raise ValueError("外部 api_base 必须使用 HTTPS")
+
+    path = parsed.path.rstrip("/")
+    for endpoint in ("/chat/completions", "/responses"):
+        if path.endswith(endpoint):
+            path = path[: -len(endpoint)].rstrip("/")
+            break
+    if not path.endswith("/v1"):
+        path = f"{path}/v1" if path else "/v1"
+    return parsed._replace(
+        path=path,
+        params="",
+        query="",
+        fragment="",
+    ).geturl()
 
 
 def _validate_provider_specs(provider_specs: object) -> List[Dict]:
@@ -30,9 +57,10 @@ def _validate_provider_specs(provider_specs: object) -> List[Dict]:
         if not isinstance(raw, dict):
             raise TypeError(f"第 {index} 个 Provider 必须是 JSON 对象")
         identifier = str(raw.get("id") or "").strip()
-        api_base = str(raw.get("api_base") or "").strip().rstrip("/")
+        api_base = normalize_openai_base_url(raw.get("api_base"))
         model = str(raw.get("model") or "").strip()
         key_env = str(raw.get("key_env") or "").strip()
+        reasoning_effort = str(raw.get("reasoning_effort") or "").strip().casefold()
         parsed_url = urlparse(api_base)
         if not identifier or not model:
             raise ValueError(f"第 {index} 个 Provider 缺少 id 或 model")
@@ -44,6 +72,11 @@ def _validate_provider_specs(provider_specs: object) -> List[Dict]:
             raise ValueError(f"第 {index} 个 api_base 不允许内嵌凭据")
         if not ENV_NAME_PATTERN.fullmatch(key_env):
             raise ValueError(f"第 {index} 个 key_env 不是合法环境变量名")
+        if reasoning_effort and not re.fullmatch(
+            r"[a-z][a-z0-9_-]{0,31}",
+            reasoning_effort,
+        ):
+            raise ValueError(f"第 {index} 个 reasoning_effort 格式无效")
         identifiers.add(identifier)
         normalized.append(
             {
@@ -51,12 +84,12 @@ def _validate_provider_specs(provider_specs: object) -> List[Dict]:
                 "api_base": api_base,
                 "model": model,
                 "key_env": key_env,
+                "reasoning_effort": reasoning_effort,
             }
         )
     if tuple(item["id"] for item in normalized) != MANAGED_PROVIDER_IDS:
         raise ValueError(
-            "三个 Provider id 必须依次为 "
-            "muz-primary、muz-secondary、muz-tertiary"
+            "三个 Provider id 必须依次为 muz-primary、muz-secondary、muz-tertiary"
         )
     return normalized
 
@@ -74,6 +107,11 @@ def _provider_config(spec: Dict) -> Dict:
         "timeout": 120,
         "proxy": "",
         "custom_headers": {},
+        "custom_extra_body": (
+            {"reasoning_effort": spec["reasoning_effort"]}
+            if spec["reasoning_effort"]
+            else {}
+        ),
         # AstrBot's built-in local compressor triggers at 82%. This technical
         # window makes its trigger 49,999.5 tokens. The gateway plugin also
         # enforces the explicit 50k cap before the runner is reset.
@@ -95,16 +133,20 @@ def build_astrbot_config(
     preserved_providers = [
         provider
         for provider in existing_providers
-        if not (
-            isinstance(provider, dict)
-            and (
-                provider.get("id") in managed_ids
-            )
-        )
+        if not (isinstance(provider, dict) and (provider.get("id") in managed_ids))
     ]
     provider_settings = current.get("provider_settings", {})
     if not isinstance(provider_settings, dict):
         raise TypeError("cmd_config.json 的 provider_settings 必须是对象")
+    proactive_capability = provider_settings.get("proactive_capability", {})
+    if not isinstance(proactive_capability, dict):
+        proactive_capability = {}
+    file_extract = provider_settings.get("file_extract", {})
+    if not isinstance(file_extract, dict):
+        file_extract = {}
+    subagent_orchestrator = current.get("subagent_orchestrator", {})
+    if not isinstance(subagent_orchestrator, dict):
+        subagent_orchestrator = {}
 
     updated_settings = {
         **provider_settings,
@@ -119,6 +161,16 @@ def build_astrbot_config(
         "max_context_length": -1,
         "dequeue_context_length": 8,
         "fallback_max_context_tokens": TECHNICAL_CONTEXT_WINDOW,
+        "web_search": False,
+        "computer_use_runtime": "none",
+        "proactive_capability": {
+            **proactive_capability,
+            "add_cron_tools": False,
+        },
+        "file_extract": {
+            **file_extract,
+            "enable": False,
+        },
     }
     return {
         **current,
@@ -127,6 +179,11 @@ def build_astrbot_config(
             *[_provider_config(spec) for spec in specs],
         ],
         "provider_settings": updated_settings,
+        "subagent_orchestrator": {
+            **subagent_orchestrator,
+            "main_enable": False,
+            "agents": [],
+        },
     }
 
 

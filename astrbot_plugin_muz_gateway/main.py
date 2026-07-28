@@ -1,13 +1,16 @@
+from pathlib import Path
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
+from astrbot.core.agent.tool import ToolSet
 
 from .compact import compact_request
 
 PLUGIN_NAME = "astrbot_plugin_muz_gateway"
 PROMPT_FILE_NAME = "system_prompt.txt"
+DEFAULT_PROMPT_PATH = Path(__file__).with_name("system_prompt.default.txt")
 MAX_CONTEXT_TOKENS = 50_000
 COMPACT_TARGET_TOKENS = 45_000
 
@@ -15,10 +18,12 @@ COMPACT_TARGET_TOKENS = 45_000
 class Main(Star):
     def __init__(self, context: Context) -> None:
         super().__init__(context)
-        self.prompt_path = (
-            StarTools.get_data_dir(PLUGIN_NAME) / PROMPT_FILE_NAME
-        )
-        self.prompt_path.touch(exist_ok=True)
+        self.prompt_path = StarTools.get_data_dir(PLUGIN_NAME) / PROMPT_FILE_NAME
+        if not self.prompt_path.exists():
+            self.prompt_path.write_text(
+                DEFAULT_PROMPT_PATH.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
         logger.info("系统提示词文件：%s", self.prompt_path)
 
     def _load_system_prompt(self) -> str:
@@ -35,9 +40,11 @@ class Main(Star):
         request: ProviderRequest,
     ) -> None:
         del event
-        # This intentionally replaces AstrBot's persona prompt. An empty file
-        # therefore means an empty model system prompt, as required.
+        # The runtime file remains editable and is hot-loaded on every request.
         request.system_prompt = self._load_system_prompt()
+        # Group users only need conversation. Remove every shell, file, web,
+        # plugin, MCP, computer-use, cron, and subagent tool at the final hook.
+        request.func_tool = ToolSet()
         result = compact_request(
             request.contexts,
             prompt=request.prompt,

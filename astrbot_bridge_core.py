@@ -8,13 +8,14 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Dict, FrozenSet, Iterable, Optional
 from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
 
 DEFAULT_BASE_URL = "http://127.0.0.1:6185"
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
 class AstrBotApiError(RuntimeError):
@@ -30,6 +31,7 @@ class BridgeConfig:
     timeout_seconds: float = 180.0
     max_concurrent: int = 3
     min_interval_seconds: float = 3.0
+    passive_trigger_probability: float = 0.42
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,8 @@ def _validate_base_url(value: object) -> str:
         raise ValueError("ASTRBOT_BASE_URL 必须是合法的 HTTP(S) 地址")
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("ASTRBOT_BASE_URL 不允许内嵌凭据")
+    if parsed.scheme == "http" and parsed.hostname not in LOOPBACK_HOSTS:
+        raise ValueError("外部 ASTRBOT_BASE_URL 必须使用 HTTPS")
     return base_url
 
 
@@ -87,13 +91,14 @@ def load_bridge_config(path: Path) -> BridgeConfig:
     try:
         timeout_seconds = float(raw.get("TIMEOUT_SECONDS", 180))
         max_concurrent = int(raw.get("MAX_CONCURRENT", 3))
-        min_interval_seconds = float(
-            raw.get("MIN_INTERVAL_SECONDS", 3)
+        min_interval_seconds = float(raw.get("MIN_INTERVAL_SECONDS", 3))
+        passive_trigger_probability = float(
+            raw.get("PASSIVE_TRIGGER_PROBABILITY", 0.42)
         )
     except (TypeError, ValueError) as error:
         raise ValueError(
             "TIMEOUT_SECONDS、MAX_CONCURRENT 和 "
-            "MIN_INTERVAL_SECONDS 必须是数字"
+            "MIN_INTERVAL_SECONDS、PASSIVE_TRIGGER_PROBABILITY 必须是数字"
         ) from error
     if timeout_seconds <= 0:
         raise ValueError("TIMEOUT_SECONDS 必须大于 0")
@@ -101,6 +106,8 @@ def load_bridge_config(path: Path) -> BridgeConfig:
         raise ValueError("MAX_CONCURRENT 必须在 1 到 20 之间")
     if min_interval_seconds < 0 or min_interval_seconds > 300:
         raise ValueError("MIN_INTERVAL_SECONDS 必须在 0 到 300 之间")
+    if not 0 <= passive_trigger_probability <= 1:
+        raise ValueError("PASSIVE_TRIGGER_PROBABILITY 必须在 0 到 1 之间")
 
     return BridgeConfig(
         enabled=enabled,
@@ -110,7 +117,27 @@ def load_bridge_config(path: Path) -> BridgeConfig:
         timeout_seconds=timeout_seconds,
         max_concurrent=max_concurrent,
         min_interval_seconds=min_interval_seconds,
+        passive_trigger_probability=passive_trigger_probability,
     )
+
+
+def is_status_command(argument: str) -> bool:
+    """Return whether an /ai argument is the sole supported action."""
+    return argument.strip() == "状态"
+
+
+def should_passively_reply(
+    message: str,
+    *,
+    directed: bool,
+    probability: float,
+    sample: float,
+) -> bool:
+    """Apply the passive group-message trigger policy."""
+    normalized = message.strip()
+    if not normalized or normalized.startswith("/") or directed:
+        return False
+    return sample < probability
 
 
 def _validate_qq_id(value: object, label: str) -> str:
@@ -128,12 +155,12 @@ def build_conversation_identity(
         normalized_group = _validate_qq_id(group_id, "群号")
         return ConversationIdentity(
             key=f"group:{normalized_group}",
-            username=f"qq-group-{normalized_group}",
+            username="qq-group",
         )
     normalized_user = _validate_qq_id(user_id, "QQ 号")
     return ConversationIdentity(
         key=f"private:{normalized_user}",
-        username=f"qq-user-{normalized_user}",
+        username="qq-user",
     )
 
 
@@ -156,6 +183,25 @@ class ConversationRateLimiter:
                 return retry_after
         self._last_requests = {**self._last_requests, key: current}
         return 0
+
+
+class ConversationInFlightGate:
+    """Reject excess work immediately instead of building a paid request queue."""
+
+    def __init__(self, max_concurrent: int) -> None:
+        if max_concurrent < 1:
+            raise ValueError("max_concurrent 必须大于 0")
+        self.max_concurrent = max_concurrent
+        self._active: FrozenSet[str] = frozenset()
+
+    def try_enter(self, key: str) -> bool:
+        if key in self._active or len(self._active) >= self.max_concurrent:
+            return False
+        self._active = self._active.union((key,))
+        return True
+
+    def leave(self, key: str) -> None:
+        self._active = self._active.difference((key,))
 
 
 class JsonSessionStore:
@@ -327,26 +373,20 @@ class AstrBotClient:
             ) as response:
                 if response.status_code >= 400:
                     await response.aread()
-                    raise AstrBotApiError(
-                        f"AstrBot HTTP {response.status_code}"
-                    )
+                    raise AstrBotApiError(f"AstrBot HTTP {response.status_code}")
                 accumulator = _SseAccumulator()
                 data_lines = []
                 async for raw_line in response.aiter_lines():
                     line = raw_line.rstrip("\r\n")
                     if not line:
                         if data_lines:
-                            accumulator.add(
-                                _parse_sse_data("\n".join(data_lines))
-                            )
+                            accumulator.add(_parse_sse_data("\n".join(data_lines)))
                             data_lines = []
                         continue
                     if line.startswith("data:"):
                         data_lines.append(line[5:].lstrip())
                 if data_lines:
-                    accumulator.add(
-                        _parse_sse_data("\n".join(data_lines))
-                    )
+                    accumulator.add(_parse_sse_data("\n".join(data_lines)))
                 return accumulator.result()
         except httpx.TimeoutException as error:
             raise AstrBotApiError("AstrBot 请求超时") from error
