@@ -106,6 +106,8 @@ class AstrBotConfiguratorTests(unittest.TestCase):
             "truncate_by_turns",
         )
         self.assertFalse(result["provider_settings"]["web_search"])
+        self.assertEqual(result["provider_settings"]["max_agent_step"], 1)
+        self.assertEqual(result["provider_settings"]["tool_call_timeout"], 30)
         self.assertEqual(
             result["provider_settings"]["computer_use_runtime"],
             "none",

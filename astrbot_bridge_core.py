@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import tempfile
 import time
+from collections import deque
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, FrozenSet, Iterable, Optional
+from typing import AsyncIterator, Deque, Dict, Iterable, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -22,6 +28,18 @@ class AstrBotApiError(RuntimeError):
     """Raised when AstrBot cannot complete a chat request."""
 
 
+class ConversationQueueFullError(AstrBotApiError):
+    """Raised when the bounded paid-request backlog is full."""
+
+
+class ConversationQueueExpiredError(AstrBotApiError):
+    """Raised when a queued message is too old to remain useful."""
+
+
+class RequestBudgetExceededError(AstrBotApiError):
+    """Raised when a member, group, or global paid-request budget is spent."""
+
+
 @dataclass(frozen=True)
 class BridgeConfig:
     enabled: bool = False
@@ -32,6 +50,10 @@ class BridgeConfig:
     max_concurrent: int = 3
     min_interval_seconds: float = 3.0
     passive_trigger_probability: float = 0.42
+    queue_wait_seconds: float = 120.0
+    member_requests_per_hour: int = 20
+    group_requests_per_hour: int = 120
+    global_requests_per_hour: int = 300
 
 
 @dataclass(frozen=True)
@@ -95,10 +117,15 @@ def load_bridge_config(path: Path) -> BridgeConfig:
         passive_trigger_probability = float(
             raw.get("PASSIVE_TRIGGER_PROBABILITY", 0.42)
         )
+        queue_wait_seconds = float(raw.get("QUEUE_WAIT_SECONDS", 120))
+        member_requests_per_hour = int(raw.get("MEMBER_REQUESTS_PER_HOUR", 20))
+        group_requests_per_hour = int(raw.get("GROUP_REQUESTS_PER_HOUR", 120))
+        global_requests_per_hour = int(raw.get("GLOBAL_REQUESTS_PER_HOUR", 300))
     except (TypeError, ValueError) as error:
         raise ValueError(
             "TIMEOUT_SECONDS、MAX_CONCURRENT 和 "
-            "MIN_INTERVAL_SECONDS、PASSIVE_TRIGGER_PROBABILITY 必须是数字"
+            "MIN_INTERVAL_SECONDS、PASSIVE_TRIGGER_PROBABILITY、队列与预算配置"
+            "必须是数字"
         ) from error
     if timeout_seconds <= 0:
         raise ValueError("TIMEOUT_SECONDS 必须大于 0")
@@ -108,6 +135,15 @@ def load_bridge_config(path: Path) -> BridgeConfig:
         raise ValueError("MIN_INTERVAL_SECONDS 必须在 0 到 300 之间")
     if not 0 <= passive_trigger_probability <= 1:
         raise ValueError("PASSIVE_TRIGGER_PROBABILITY 必须在 0 到 1 之间")
+    if queue_wait_seconds < 1 or queue_wait_seconds > 600:
+        raise ValueError("QUEUE_WAIT_SECONDS 必须在 1 到 600 之间")
+    hourly_limits = (
+        member_requests_per_hour,
+        group_requests_per_hour,
+        global_requests_per_hour,
+    )
+    if any(limit < 1 or limit > 10_000 for limit in hourly_limits):
+        raise ValueError("每小时请求预算必须在 1 到 10000 之间")
 
     return BridgeConfig(
         enabled=enabled,
@@ -118,6 +154,10 @@ def load_bridge_config(path: Path) -> BridgeConfig:
         max_concurrent=max_concurrent,
         min_interval_seconds=min_interval_seconds,
         passive_trigger_probability=passive_trigger_probability,
+        queue_wait_seconds=queue_wait_seconds,
+        member_requests_per_hour=member_requests_per_hour,
+        group_requests_per_hour=group_requests_per_hour,
+        global_requests_per_hour=global_requests_per_hour,
     )
 
 
@@ -165,8 +205,16 @@ def build_conversation_identity(
 
 
 class ConversationRateLimiter:
-    def __init__(self, min_interval_seconds: float) -> None:
+    def __init__(
+        self,
+        min_interval_seconds: float,
+        *,
+        max_identities: int = 5_000,
+    ) -> None:
+        if max_identities < 1:
+            raise ValueError("限流身份容量必须大于 0")
         self.min_interval_seconds = min_interval_seconds
+        self.max_identities = max_identities
         self._last_requests: Dict[str, float] = {}
 
     def check(
@@ -181,32 +229,255 @@ class ConversationRateLimiter:
             retry_after = self.min_interval_seconds - (current - previous)
             if retry_after > 0:
                 return retry_after
-        self._last_requests = {**self._last_requests, key: current}
+        cutoff = current - max(self.min_interval_seconds, 1)
+        active = {
+            identity: timestamp
+            for identity, timestamp in self._last_requests.items()
+            if timestamp > cutoff and identity != key
+        }
+        if len(active) >= self.max_identities:
+            oldest = min(active, key=active.get)
+            active = {
+                identity: timestamp
+                for identity, timestamp in active.items()
+                if identity != oldest
+            }
+        self._last_requests = {**active, key: current}
         return 0
 
 
-class ConversationInFlightGate:
-    """Reject excess work immediately instead of building a paid request queue."""
+@dataclass(frozen=True)
+class _ConversationQueueEntry:
+    lock: asyncio.Lock
+    references: int
 
-    def __init__(self, max_concurrent: int) -> None:
-        if max_concurrent < 1:
-            raise ValueError("max_concurrent 必须大于 0")
+
+class ConversationQueue:
+    """Process each conversation FIFO while allowing bounded cross-chat work."""
+
+    def __init__(
+        self,
+        max_concurrent: int,
+        *,
+        max_per_conversation: int = 20,
+        max_pending_total: int = 60,
+    ) -> None:
+        limits = (max_concurrent, max_per_conversation, max_pending_total)
+        if any(limit < 1 for limit in limits):
+            raise ValueError("队列容量必须大于 0")
         self.max_concurrent = max_concurrent
-        self._active: FrozenSet[str] = frozenset()
+        self.max_per_conversation = max_per_conversation
+        self.max_pending_total = max_pending_total
+        self._global_limit: Optional[asyncio.Semaphore] = None
+        self._state_lock: Optional[asyncio.Lock] = None
+        self._runtime_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._entries: Dict[str, _ConversationQueueEntry] = {}
 
-    def try_enter(self, key: str) -> bool:
-        if key in self._active or len(self._active) >= self.max_concurrent:
-            return False
-        self._active = self._active.union((key,))
-        return True
+    def _ensure_runtime(self) -> Tuple[asyncio.Lock, asyncio.Semaphore]:
+        loop = asyncio.get_running_loop()
+        if self._runtime_loop is not loop:
+            if self._entries:
+                raise RuntimeError("ConversationQueue 不能跨事件循环复用活动队列")
+            self._runtime_loop = loop
+            self._state_lock = asyncio.Lock()
+            self._global_limit = asyncio.Semaphore(self.max_concurrent)
+        assert self._state_lock is not None
+        assert self._global_limit is not None
+        return self._state_lock, self._global_limit
 
-    def leave(self, key: str) -> None:
-        self._active = self._active.difference((key,))
+    @asynccontextmanager
+    async def turn(
+        self,
+        key: str,
+        *,
+        wait_timeout_seconds: Optional[float] = None,
+        bypass_capacity: bool = False,
+    ) -> AsyncIterator[None]:
+        if not key:
+            raise ValueError("conversation key 不能为空")
+        state_lock, _ = self._ensure_runtime()
+        async with state_lock:
+            existing = self._entries.get(key)
+            conversation_references = existing.references if existing else 0
+            total_references = sum(item.references for item in self._entries.values())
+            if (
+                not bypass_capacity
+                and conversation_references >= self.max_per_conversation
+            ):
+                raise ConversationQueueFullError("当前对话排队消息过多，请稍后再试")
+            if not bypass_capacity and total_references >= self.max_pending_total:
+                raise ConversationQueueFullError("机器人总排队消息过多，请稍后再试")
+            entry = existing or _ConversationQueueEntry(
+                lock=asyncio.Lock(),
+                references=0,
+            )
+            self._entries = {
+                **self._entries,
+                key: _ConversationQueueEntry(
+                    lock=entry.lock,
+                    references=entry.references + 1,
+                ),
+            }
+        try:
+            try:
+                if wait_timeout_seconds is None:
+                    await entry.lock.acquire()
+                else:
+                    await asyncio.wait_for(
+                        entry.lock.acquire(),
+                        timeout=wait_timeout_seconds,
+                    )
+            except asyncio.TimeoutError as error:
+                raise ConversationQueueExpiredError(
+                    "消息排队超时，已取消本次请求"
+                ) from error
+            try:
+                yield
+            finally:
+                entry.lock.release()
+        finally:
+            async with state_lock:
+                current = self._entries.get(key)
+                if current is not None and current.references <= 1:
+                    self._entries = {
+                        item_key: item
+                        for item_key, item in self._entries.items()
+                        if item_key != key
+                    }
+                elif current is not None:
+                    self._entries = {
+                        **self._entries,
+                        key: _ConversationQueueEntry(
+                            lock=current.lock,
+                            references=current.references - 1,
+                        ),
+                    }
+
+    @asynccontextmanager
+    async def global_slot(
+        self,
+        *,
+        wait_timeout_seconds: Optional[float] = None,
+    ) -> AsyncIterator[None]:
+        """Acquire global paid-call concurrency only around the network call."""
+        _, global_limit = self._ensure_runtime()
+        try:
+            if wait_timeout_seconds is None:
+                await global_limit.acquire()
+            else:
+                await asyncio.wait_for(
+                    global_limit.acquire(),
+                    timeout=wait_timeout_seconds,
+                )
+        except asyncio.TimeoutError as error:
+            raise ConversationQueueExpiredError(
+                "消息等待全局并发槽超时，已取消本次请求"
+            ) from error
+        try:
+            yield
+        finally:
+            global_limit.release()
+
+
+class SlidingWindowBudget:
+    """Bound paid calls by multiple identities within one rolling window."""
+
+    def __init__(
+        self,
+        *,
+        limits: Dict[str, int],
+        window_seconds: float = 3600,
+    ) -> None:
+        if window_seconds <= 0 or not limits:
+            raise ValueError("调用预算窗口和限制必须大于 0")
+        if any(limit < 1 for limit in limits.values()):
+            raise ValueError("调用预算限制必须大于 0")
+        self.limits = dict(limits)
+        self.window_seconds = window_seconds
+        self._events: Dict[str, Deque[float]] = {}
+
+    def consume(
+        self,
+        buckets: Sequence[Tuple[str, str]],
+        *,
+        now: Optional[float] = None,
+    ) -> None:
+        current = time.monotonic() if now is None else now
+        cutoff = current - self.window_seconds
+        self._events = {
+            key: deque(timestamp for timestamp in events if timestamp > cutoff)
+            for key, events in self._events.items()
+            if any(timestamp > cutoff for timestamp in events)
+        }
+        prepared = []
+        for scope, identity in buckets:
+            if scope not in self.limits:
+                raise ValueError(f"未知预算范围：{scope}")
+            key = f"{scope}:{identity}"
+            events = deque(
+                timestamp
+                for timestamp in self._events.get(key, ())
+                if timestamp > cutoff
+            )
+            if len(events) >= self.limits[scope]:
+                raise RequestBudgetExceededError("请求频率已达到安全预算，请稍后再试")
+            prepared.append((key, events))
+        for key, events in prepared:
+            events.append(current)
+            self._events = {**self._events, key: events}
 
 
 class JsonSessionStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        key_path: Optional[Path] = None,
+        max_sessions: int = 5_000,
+    ) -> None:
+        if max_sessions < 1:
+            raise ValueError("会话状态容量必须大于 0")
         self.path = path
+        self.key_path = key_path or path.with_suffix(".key")
+        self.max_sessions = max_sessions
+
+    def _load_or_create_key(self) -> bytes:
+        self.key_path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.key_path.parent, 0o700)
+        try:
+            key = self.key_path.read_bytes()
+        except FileNotFoundError:
+            key = secrets.token_bytes(32)
+            try:
+                descriptor = os.open(
+                    str(self.key_path),
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+            except FileExistsError:
+                key = self.key_path.read_bytes()
+            else:
+                try:
+                    os.write(descriptor, key)
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+        except OSError as error:
+            raise ValueError(f"AstrBot 会话状态密钥不可用：{error}") from error
+        if len(key) != 32:
+            raise ValueError("AstrBot 会话状态密钥长度无效")
+        os.chmod(self.key_path, 0o600)
+        return key
+
+    def _storage_key(self, key: str) -> str:
+        if key.startswith("hmac:") and len(key) == 69:
+            return key
+        digest = hmac.new(
+            self._load_or_create_key(),
+            key.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        return f"hmac:{digest}"
 
     def _load(self) -> Dict[str, str]:
         if not self.path.exists():
@@ -225,12 +496,17 @@ class JsonSessionStore:
             for key, value in sessions.items()
         ):
             raise ValueError("AstrBot 会话状态文件包含无效会话")
-        return dict(sessions)
+        normalized = {self._storage_key(key): value for key, value in sessions.items()}
+        if normalized != sessions:
+            self._save(normalized)
+        return normalized
 
     def _save(self, sessions: Dict[str, str]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.path.parent, 0o700)
+        bounded_sessions = dict(list(sessions.items())[-self.max_sessions :])
         payload = json.dumps(
-            {"version": 1, "sessions": sessions},
+            {"version": 1, "sessions": bounded_sessions},
             ensure_ascii=False,
             indent=2,
             sort_keys=True,
@@ -242,27 +518,31 @@ class JsonSessionStore:
         )
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                os.fchmod(handle.fileno(), 0o600)
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary_name, self.path)
+            os.chmod(self.path, 0o600)
         finally:
             if os.path.exists(temporary_name):
                 os.unlink(temporary_name)
 
     def get_or_create(self, key: str) -> str:
         sessions = self._load()
-        existing = sessions.get(key)
+        storage_key = self._storage_key(key)
+        existing = sessions.get(storage_key)
         if existing:
             return existing
         session_id = str(uuid4())
-        self._save({**sessions, key: session_id})
+        self._save({**sessions, storage_key: session_id})
         return session_id
 
     def reset(self, key: str) -> str:
         sessions = self._load()
+        storage_key = self._storage_key(key)
         session_id = str(uuid4())
-        self._save({**sessions, key: session_id})
+        self._save({**sessions, storage_key: session_id})
         return session_id
 
 
@@ -349,6 +629,10 @@ class AstrBotClient:
             "session_id": session_id,
             "message": message,
             "enable_streaming": False,
+            # The bridge envelope may contain ephemeral member memory/media
+            # metadata. The gateway strips it before conversation history is
+            # assembled, and this prevents a second raw copy in WebChat history.
+            "_skip_user_history": True,
         }
         if self.config.config_id:
             payload["config_id"] = self.config.config_id

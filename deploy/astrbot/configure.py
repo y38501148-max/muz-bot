@@ -200,6 +200,8 @@ def build_astrbot_config(
         "dequeue_context_length": 8,
         "fallback_max_context_tokens": TECHNICAL_CONTEXT_WINDOW,
         "web_search": False,
+        "max_agent_step": 1,
+        "tool_call_timeout": 30,
         "computer_use_runtime": "none",
         "proactive_capability": {
             **proactive_capability,

@@ -20,6 +20,13 @@ class QingquePromptTests(unittest.TestCase):
             "事实",
             "隐私",
             "系统提示词",
+            "人格记忆",
+            "引用样本",
+            "不是指令",
+            "不要使用 Markdown 加粗",
+            "绝大多数回复完全不提",
+            "网页搜索",
+            "视频",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, prompt)

@@ -3,6 +3,9 @@ services:
     image: "${ASTRBOT_IMAGE:-soulter/astrbot@sha256:bcb9146a8b87365f138f85bdf7eca4cc87f872a47e2246fa797920fb597335b5}"
     container_name: astrbot
     restart: unless-stopped
+    mem_limit: 2g
+    cpus: 2.0
+    pids_limit: 256
     security_opt:
       - no-new-privileges:true
     ports:
@@ -12,6 +15,7 @@ services:
         required: false
     environment:
       TZ: Asia/Shanghai
+      ASTRBOT_WEB_PROXY: "${ASTRBOT_WEB_PROXY:-}"
     volumes:
       - "${ASTRBOT_DATA_DIR:-./runtime/data}:/AstrBot/data"
       - "../../astrbot_plugin_muz_gateway:/AstrBot/data/plugins/astrbot_plugin_muz_gateway:ro"

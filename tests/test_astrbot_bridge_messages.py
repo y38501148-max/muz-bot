@@ -13,6 +13,11 @@ class AstrBotBridgeMessageTests(unittest.TestCase):
         self.assertEqual(message[0].type, "text")
         self.assertIn("[CQ:at,qq=all]", message[0].data["text"])
 
+    def test_unsupported_markdown_bold_markers_are_removed(self):
+        message = as_plain_text_message("这是**重点**，也是__重点__。")
+
+        self.assertEqual(message.extract_plain_text(), "这是重点，也是重点。")
+
 
 if __name__ == "__main__":
     unittest.main()

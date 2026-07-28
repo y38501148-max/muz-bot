@@ -10,9 +10,13 @@ from astrbot_bridge_core import (
     AstrBotApiError,
     AstrBotClient,
     BridgeConfig,
-    ConversationInFlightGate,
+    ConversationQueue,
+    ConversationQueueExpiredError,
+    ConversationQueueFullError,
     ConversationRateLimiter,
     JsonSessionStore,
+    RequestBudgetExceededError,
+    SlidingWindowBudget,
     build_conversation_identity,
     consume_sse_lines,
     is_status_command,
@@ -171,17 +175,183 @@ class ConversationRateLimiterTests(unittest.TestCase):
         self.assertEqual(limiter.check("group:1", now=13), 0)
 
 
-class ConversationInFlightGateTests(unittest.TestCase):
-    def test_rejects_same_conversation_and_global_overflow_without_queueing(self):
-        gate = ConversationInFlightGate(max_concurrent=2)
+class ConversationQueueTests(unittest.TestCase):
+    def test_same_conversation_is_processed_in_fifo_order(self):
+        async def scenario():
+            queue = ConversationQueue(max_concurrent=2)
+            first_started = asyncio.Event()
+            release_first = asyncio.Event()
+            events = []
 
-        self.assertTrue(gate.try_enter("group:1"))
-        self.assertFalse(gate.try_enter("group:1"))
-        self.assertTrue(gate.try_enter("group:2"))
-        self.assertFalse(gate.try_enter("group:3"))
+            async def worker(name, wait=False):
+                async with queue.turn("group:1"):
+                    events.append(f"{name}:start")
+                    if wait:
+                        first_started.set()
+                        await release_first.wait()
+                    events.append(f"{name}:end")
 
-        gate.leave("group:1")
-        self.assertTrue(gate.try_enter("group:3"))
+            first = asyncio.create_task(worker("first", wait=True))
+            await first_started.wait()
+            second = asyncio.create_task(worker("second"))
+            third = asyncio.create_task(worker("third"))
+            await asyncio.sleep(0)
+            self.assertEqual(events, ["first:start"])
+            release_first.set()
+            await asyncio.gather(first, second, third)
+            return events
+
+        self.assertEqual(
+            asyncio.run(scenario()),
+            [
+                "first:start",
+                "first:end",
+                "second:start",
+                "second:end",
+                "third:start",
+                "third:end",
+            ],
+        )
+
+    def test_different_conversations_can_run_up_to_global_limit(self):
+        async def scenario():
+            queue = ConversationQueue(max_concurrent=2)
+            both_started = asyncio.Event()
+            release = asyncio.Event()
+            active = 0
+            peak = 0
+
+            async def worker(key):
+                nonlocal active, peak
+                async with queue.turn(key), queue.global_slot():
+                    active += 1
+                    peak = max(peak, active)
+                    if active == 2:
+                        both_started.set()
+                    await release.wait()
+                    active -= 1
+
+            first = asyncio.create_task(worker("group:1"))
+            second = asyncio.create_task(worker("group:2"))
+            await asyncio.wait_for(both_started.wait(), timeout=1)
+            release.set()
+            await asyncio.gather(first, second)
+            return peak
+
+        self.assertEqual(asyncio.run(scenario()), 2)
+
+    def test_extreme_backlog_is_bounded(self):
+        async def scenario():
+            queue = ConversationQueue(
+                max_concurrent=1,
+                max_per_conversation=2,
+                max_pending_total=2,
+            )
+            first_started = asyncio.Event()
+            release_first = asyncio.Event()
+
+            async def first_worker():
+                async with queue.turn("group:1"):
+                    first_started.set()
+                    await release_first.wait()
+
+            async def second_worker():
+                async with queue.turn("group:1"):
+                    return
+
+            first = asyncio.create_task(first_worker())
+            await first_started.wait()
+            second = asyncio.create_task(second_worker())
+            await asyncio.sleep(0)
+            with self.assertRaises(ConversationQueueFullError):
+                async with queue.turn("group:1"):
+                    pass
+            release_first.set()
+            await asyncio.gather(first, second)
+
+        asyncio.run(scenario())
+
+    def test_queue_wait_expires_and_constructor_is_loop_safe(self):
+        queue = ConversationQueue(max_concurrent=1)
+
+        async def scenario():
+            first_started = asyncio.Event()
+            release = asyncio.Event()
+
+            async def first_worker():
+                async with queue.turn("group:1"):
+                    first_started.set()
+                    await release.wait()
+
+            first = asyncio.create_task(first_worker())
+            await first_started.wait()
+            with self.assertRaises(ConversationQueueExpiredError):
+                async with queue.turn(
+                    "group:1",
+                    wait_timeout_seconds=0.01,
+                ):
+                    pass
+            release.set()
+            await first
+
+        asyncio.run(scenario())
+
+    def test_global_slot_wait_also_expires(self):
+        async def scenario():
+            queue = ConversationQueue(max_concurrent=1)
+            first_started = asyncio.Event()
+            release = asyncio.Event()
+
+            async def first_worker():
+                async with queue.global_slot():
+                    first_started.set()
+                    await release.wait()
+
+            first = asyncio.create_task(first_worker())
+            await first_started.wait()
+            with self.assertRaises(ConversationQueueExpiredError):
+                async with queue.global_slot(wait_timeout_seconds=0.01):
+                    pass
+            release.set()
+            await first
+
+        asyncio.run(scenario())
+
+
+class SlidingWindowBudgetTests(unittest.TestCase):
+    def test_member_group_and_global_budgets_are_rolling(self):
+        budget = SlidingWindowBudget(
+            limits={"member": 2, "group": 3, "global": 4},
+            window_seconds=10,
+        )
+        first = (
+            ("member", "group-1:user-1"),
+            ("group", "group-1"),
+            ("global", "all"),
+        )
+        budget.consume(first, now=1)
+        budget.consume(first, now=2)
+
+        with self.assertRaises(RequestBudgetExceededError):
+            budget.consume(first, now=3)
+
+        budget.consume(first, now=12.1)
+
+    def test_expired_identity_buckets_are_removed(self):
+        budget = SlidingWindowBudget(
+            limits={"member": 2, "global": 10},
+            window_seconds=10,
+        )
+        budget.consume(
+            (("member", "old"), ("global", "all")),
+            now=1,
+        )
+        budget.consume(
+            (("member", "new"), ("global", "all")),
+            now=20,
+        )
+
+        self.assertNotIn("member:old", budget._events)
 
 
 class JsonSessionStoreTests(unittest.TestCase):
@@ -208,6 +378,21 @@ class JsonSessionStoreTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "会话状态"):
                 JsonSessionStore(path).get_or_create("group:1")
+
+    def test_session_file_is_private_and_capacity_is_bounded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sessions.json"
+            store = JsonSessionStore(path, max_sessions=2)
+            store.get_or_create("group:1")
+            store.get_or_create("group:2")
+            store.get_or_create("group:3")
+
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+            self.assertEqual(len(payload["sessions"]), 2)
+            self.assertNotIn("group:2", path.read_text(encoding="utf-8"))
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(store.key_path.stat().st_mode & 0o777, 0o600)
 
 
 class SseTests(unittest.TestCase):
@@ -253,6 +438,7 @@ class AstrBotClientTests(unittest.TestCase):
             )
             payload = json.loads(request.content)
             self.assertEqual(payload["username"], "qq-group-1")
+            self.assertTrue(payload["_skip_user_history"])
             self.assertEqual(payload["session_id"], "session-1")
             self.assertEqual(payload["message"], "hello")
             body = (

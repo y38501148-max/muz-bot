@@ -12,6 +12,10 @@ data/x_monitor/config.json
 data/x_monitor/state.json
 data/astrbot_bridge/config.json
 data/astrbot_bridge/sessions.json
+data/astrbot_bridge/sessions.key
+data/astrbot_bridge/member_memories.sqlite3
+data/astrbot_bridge/member_memories.sqlite3-*
+data/astrbot_bridge/member_memories.key
 deploy/astrbot/.env
 deploy/astrbot/providers.json
 deploy/astrbot/runtime/
