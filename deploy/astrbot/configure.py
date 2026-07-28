@@ -133,23 +133,32 @@ def _validate_provider_specs(provider_specs: object) -> List[Dict]:
 
 
 def _provider_config(spec: Dict) -> Dict:
+    source_id = f"{spec['id']}_source"
     return {
         "id": spec["id"],
-        "provider": "openai",
-        "type": "openai_chat_completion",
-        "provider_type": "chat_completion",
-        "enable": True,
-        "key": [f"${spec['key_env']}"],
-        "api_base": spec["api_base"],
+        "provider_source_id": source_id,
         "model": spec["model"],
-        "timeout": 120,
-        "proxy": spec["proxy"],
-        "custom_headers": {},
+        "enable": True,
+        "modalities": [],
         "custom_extra_body": (
             {"reasoning_effort": spec["reasoning_effort"]}
             if spec["reasoning_effort"]
             else {}
         ),
+    }
+
+
+def _provider_source_config(spec: Dict) -> Dict:
+    return {
+        "id": f"{spec['id']}_source",
+        "provider": "openai",
+        "type": "openai_chat_completion",
+        "provider_type": "chat_completion",
+        "key": [f"${spec['key_env']}"],
+        "api_base": spec["api_base"],
+        "timeout": 120,
+        "proxy": spec["proxy"],
+        "custom_headers": {},
         # AstrBot's built-in local compressor triggers at 82%. This technical
         # window makes its trigger 49,999.5 tokens. The gateway plugin also
         # enforces the explicit 50k cap before the runner is reset.
@@ -172,6 +181,15 @@ def build_astrbot_config(
         provider
         for provider in existing_providers
         if not (isinstance(provider, dict) and (provider.get("id") in managed_ids))
+    ]
+    existing_sources = current.get("provider_sources", [])
+    if not isinstance(existing_sources, list):
+        raise TypeError("cmd_config.json 的 provider_sources 必须是数组")
+    managed_source_ids = {f"{identifier}_source" for identifier in managed_ids}
+    preserved_sources = [
+        source
+        for source in existing_sources
+        if not (isinstance(source, dict) and source.get("id") in managed_source_ids)
     ]
     provider_settings = current.get("provider_settings", {})
     if not isinstance(provider_settings, dict):
@@ -217,6 +235,10 @@ def build_astrbot_config(
         "provider": [
             *preserved_providers,
             *[_provider_config(spec) for spec in specs],
+        ],
+        "provider_sources": [
+            *preserved_sources,
+            *[_provider_source_config(spec) for spec in specs],
         ],
         "provider_settings": updated_settings,
         "subagent_orchestrator": {

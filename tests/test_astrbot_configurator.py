@@ -46,6 +46,11 @@ class AstrBotConfiguratorTests(unittest.TestCase):
             "timezone": "Asia/Shanghai",
             "platform": [{"id": "leave-me-alone"}],
             "provider": [{"id": "existing-provider"}],
+            "provider_sources": [
+                {"id": "existing-source"},
+                {"id": "muz-primary_source", "api_base": "https://old.example"},
+                {"id": "muz-primary_source", "api_base": "https://duplicate.example"},
+            ],
             "provider_settings": {"web_search": True},
         }
         provider_specs = [
@@ -75,13 +80,15 @@ class AstrBotConfiguratorTests(unittest.TestCase):
 
         self.assertEqual(result["platform"], [{"id": "leave-me-alone"}])
         providers = {item["id"]: item for item in result["provider"]}
+        sources = {item["id"]: item for item in result["provider_sources"]}
         self.assertIn("existing-provider", providers)
+        self.assertIn("existing-source", sources)
         self.assertEqual(
-            providers["muz-primary"]["key"],
+            sources["muz-primary_source"]["key"],
             ["$MUZ_LLM_PRIMARY_KEY"],
         )
         self.assertEqual(
-            providers["muz-primary"]["api_base"],
+            sources["muz-primary_source"]["api_base"],
             "https://one.example/v1",
         )
         self.assertEqual(
@@ -89,10 +96,14 @@ class AstrBotConfiguratorTests(unittest.TestCase):
             {"reasoning_effort": "high"},
         )
         self.assertEqual(
-            providers["muz-primary"]["proxy"],
+            sources["muz-primary_source"]["proxy"],
             "http://192.168.16.1:17890",
         )
-        self.assertEqual(providers["muz-tertiary"]["proxy"], "")
+        self.assertEqual(sources["muz-tertiary_source"]["proxy"], "")
+        self.assertEqual(
+            providers["muz-primary"]["provider_source_id"],
+            "muz-primary_source",
+        )
         self.assertEqual(
             result["provider_settings"]["default_provider_id"],
             "muz-primary",
@@ -117,8 +128,15 @@ class AstrBotConfiguratorTests(unittest.TestCase):
         )
         self.assertFalse(result["subagent_orchestrator"]["main_enable"])
         self.assertEqual(
-            providers["muz-primary"]["max_context_tokens"],
+            sources["muz-primary_source"]["max_context_tokens"],
             60_975,
+        )
+        self.assertEqual(
+            sum(
+                source.get("id") == "muz-primary_source"
+                for source in result["provider_sources"]
+            ),
+            1,
         )
 
     def test_requires_exactly_three_unique_provider_specs(self):
