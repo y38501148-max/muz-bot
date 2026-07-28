@@ -1,6 +1,7 @@
 import unittest
 
 from astrbot_plugin_muz_gateway.video_frames import (
+    FRAME_FILTER,
     MEDIA_INPUT_ARGS,
     _validate_probe,
 )
@@ -12,6 +13,7 @@ class VideoProbeValidationTests(unittest.TestCase):
             MEDIA_INPUT_ARGS,
             ("-protocol_whitelist", "pipe", "-i", "pipe:0"),
         )
+        self.assertIn("eq(n,0)", FRAME_FILTER)
 
     def test_accepts_short_4k_or_smaller_video(self):
         _validate_probe(

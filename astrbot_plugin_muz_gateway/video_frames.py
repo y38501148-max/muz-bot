@@ -24,6 +24,7 @@ MEDIA_INPUT_ARGS = (
     "-i",
     "pipe:0",
 )
+FRAME_FILTER = "select='eq(n,0)+gte(t-prev_selected_t,5)',scale=min(1024\\,iw):-2"
 
 
 def _limit_media_process() -> None:
@@ -152,13 +153,21 @@ async def _extract_video_frames_serial(
         "-loglevel",
         "error",
         *MEDIA_INPUT_ARGS,
-        "-threads",
-        "1",
         "-an",
         "-sn",
         "-dn",
         "-vf",
-        "fps=1/5,scale=min(1024\\,iw):-2",
+        FRAME_FILTER,
+        "-c:v",
+        "mjpeg",
+        "-q:v",
+        "3",
+        "-pix_fmt",
+        "yuvj420p",
+        "-threads",
+        "1",
+        "-fps_mode",
+        "vfr",
         "-frames:v",
         str(max_frames),
         output_pattern,
