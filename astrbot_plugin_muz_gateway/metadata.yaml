@@ -1,0 +1,5 @@
+name: astrbot_plugin_muz_gateway
+desc: muz-bot 的空提示词热加载与 50k 本地上下文保护插件
+author: muzermat
+version: 0.1.0
+astrbot_version: ">=4.18.0"

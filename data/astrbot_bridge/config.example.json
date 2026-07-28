@@ -1,0 +1,9 @@
+{
+  "ENABLED": false,
+  "ASTRBOT_BASE_URL": "http://127.0.0.1:6185",
+  "API_KEY": "",
+  "CONFIG_ID": "default",
+  "TIMEOUT_SECONDS": 180,
+  "MAX_CONCURRENT": 3,
+  "MIN_INTERVAL_SECONDS": 3
+}

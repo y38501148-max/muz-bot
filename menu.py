@@ -60,6 +60,15 @@ HELP_DB = {
         "3️⃣ /tibo 状态：查看监控运行状态\n"
         "4️⃣ /tibo 检查：超级用户立即检查一次\n"
         "====================="
+    ),
+    "ai": (
+        "🤖 AstrBot LLM 帮助：\n"
+        "=====================\n"
+        "1️⃣ /ai [问题]：向 AstrBot 提问\n"
+        "2️⃣ /ai 新对话：重置当前群聊或私聊上下文\n"
+        "3️⃣ /ai 状态：查看 AstrBot 接入状态\n"
+        "4️⃣ 群聊中可以直接 @机器人 提问\n"
+        "====================="
     )
 }
 
@@ -68,7 +77,7 @@ async def handle_help(args: Message = CommandArg()):
     plugin_name = args.extract_plain_text().strip().lower()
 
     if not plugin_name:
-        VERSION = 0.3
+        VERSION = 0.5
         help_msg = (
         f"🤖 欢迎使用 muz-bot -v{VERSION}\n"
             "=====================\n"
@@ -80,6 +89,7 @@ async def handle_help(args: Message = CommandArg()):
         "👉 img : GPT Image2 生图\n"
         "👉 lt : LaTeX公式渲染\n"
         "👉 tibo : Tibo X 推文监控\n"
+        "👉 ai : AstrBot LLM 对话\n"
         "=====================\n"
         "💡 提示：指令开头的斜杠 / 为必须输入哦！"
     )

@@ -1,0 +1,17 @@
+services:
+  astrbot:
+    image: "${ASTRBOT_IMAGE:-soulter/astrbot@sha256:bcb9146a8b87365f138f85bdf7eca4cc87f872a47e2246fa797920fb597335b5}"
+    container_name: astrbot
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:6185:6185"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - "${ASTRBOT_DATA_DIR:-./runtime/data}:/AstrBot/data"
+      - "../../astrbot_plugin_muz_gateway:/AstrBot/data/plugins/astrbot_plugin_muz_gateway:ro"

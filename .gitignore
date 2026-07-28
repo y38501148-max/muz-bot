@@ -10,4 +10,9 @@ tmp_singledog_duaa
 data/imagegen/config.json
 data/x_monitor/config.json
 data/x_monitor/state.json
+data/astrbot_bridge/config.json
+data/astrbot_bridge/sessions.json
+deploy/astrbot/.env
+deploy/astrbot/providers.json
+deploy/astrbot/runtime/
 .coverage

@@ -1,6 +1,6 @@
 [project]
 name = "muz-bot"
-version = "0.4.0"
+version = "0.5.0"
 description = "muz-bot for QQ"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -17,6 +17,6 @@ dependencies = [
 adapters = [
     { name = "OneBot V11", module_name = "nonebot.adapters.onebot.v11" }
 ]
-plugins = ["buaa-by", "menu", "cf_plugin", "signin", "duaa_plugin", "pjsk_plugin", "imagegen_plugin", "latex_plugin", "x_monitor_plugin"]  # 以后你新建了插件，名字记得加在这里！
+plugins = ["buaa-by", "menu", "cf_plugin", "signin", "duaa_plugin", "pjsk_plugin", "imagegen_plugin", "latex_plugin", "x_monitor_plugin", "astrbot_bridge_plugin"]  # 以后你新建了插件，名字记得加在这里！
 plugin_dirs = []
 builtin_plugins = ["echo", "nonebot_plugin_apscheduler"]
