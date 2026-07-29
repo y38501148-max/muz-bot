@@ -6,12 +6,13 @@ import asyncio
 import contextlib
 import functools
 import random
+import re
 import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from nonebot import get_driver, logger, on_command, on_fullmatch, on_message
+from nonebot import get_bot, get_driver, logger, on_command, on_fullmatch, on_message
 from nonebot.adapters.onebot.v11 import (
     GroupMessageEvent,
     Message,
@@ -36,7 +37,13 @@ from astrbot_bridge_core import (
     load_bridge_config,
     should_passively_reply,
 )
-from astrbot_bridge_media import extract_event_media
+from astrbot_bridge_media import (
+    MessageFile,
+    describe_event_media,
+    extract_event_files,
+    extract_event_media,
+    extract_reply_message_id,
+)
 from astrbot_bridge_messages import as_plain_text_message
 from astrbot_member_memory import MemberMemoryStore
 from astrbot_plugin_muz_gateway.request_envelope import encode_bridge_request
@@ -81,6 +88,19 @@ MAX_MEMORY_SNAPSHOT_CACHE = 2_000
 MEMORY_SNAPSHOT_TTL_SECONDS = 10 * 60
 MAX_PENDING_MEMORY_RECORDS = 100
 MAX_MEMORY_MEMBER_GENERATIONS = 5_000
+_FILE_ANALYSIS_INTENT = re.compile(
+    r"(?:分析|看看|读取|总结|识别|解释|检查).{0,10}"
+    r"(?:文件|文档|附件|表格|PDF)"
+    r"|(?:这个|这份|该)(?:文件|文档|附件|表格|PDF)"
+    r"|(?:文件|文档|附件|表格|PDF).{0,10}(?:什么|内容|讲了什么)",
+    re.IGNORECASE,
+)
+_FILE_ANALYSIS_NEGATION = re.compile(
+    r"(?:不要|别|无需|不必|不用|禁止|请勿|不想).{0,20}"
+    r"(?:分析|查看|看看|读取|总结|识别|解释|检查|处理).{0,10}"
+    r"(?:文件|文档|附件|表格|PDF)",
+    re.IGNORECASE,
+)
 DRIVER = get_driver()
 
 ai_memory_recorder = on_message(priority=1, block=False)
@@ -284,26 +304,165 @@ async def _record_group_message(event: GroupMessageEvent) -> None:
     _cache_memory_snapshot(event, memory_samples)
 
 
-async def _build_wrapped_message(event: MessageEvent, question: str) -> str:
-    if not isinstance(event, GroupMessageEvent):
-        return encode_bridge_request(
-            display_name="",
-            memory_samples=[],
-            image_urls=[],
-            video_urls=[],
-            directed=event.is_tome(),
-            question=question,
+def _message_from_api_result(
+    result: object,
+    event: MessageEvent,
+) -> Optional[Message]:
+    if not isinstance(result, dict):
+        return None
+    message_type = str(result.get("message_type") or "")
+    if isinstance(event, GroupMessageEvent):
+        if (
+            message_type != "group"
+            or str(result.get("group_id") or "") != str(event.group_id)
+        ):
+            return None
+    else:
+        sender = result.get("sender")
+        sender_id = sender.get("user_id") if isinstance(sender, dict) else None
+        result_user_id = result.get("user_id") or sender_id
+        result_peer_id = result.get("target_id") or result.get("peer_id")
+        same_incoming_peer = str(result_user_id or "") == str(event.user_id)
+        same_outgoing_peer = (
+            str(result_user_id or "") == str(event.self_id)
+            and str(result_peer_id or "") == str(event.user_id)
         )
-    display_name = _display_name_for_event(event)
-    memory_samples = _take_memory_snapshot(event) or []
-    image_urls, video_urls = extract_event_media(event)
+        if message_type != "private" or not (
+            same_incoming_peer or same_outgoing_peer
+        ):
+            return None
+    value = result.get("message")
+    if isinstance(value, Message):
+        return value
+    if isinstance(value, (str, list)):
+        try:
+            return Message(value)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+async def _fetch_quoted_message(event: MessageEvent, bot: object) -> Optional[Message]:
+    if isinstance(getattr(getattr(event, "reply", None), "message", None), Message):
+        return None
+    message_id = extract_reply_message_id(event)
+    if not message_id:
+        return None
+    try:
+        result = await bot.get_msg(message_id=message_id)
+    except Exception as error:  # noqa: BLE001
+        _log_failure("引用消息读取", error)
+        return None
+    return _message_from_api_result(result, event)
+
+
+def _should_include_files(event: MessageEvent, question: str) -> bool:
+    if _FILE_ANALYSIS_NEGATION.search(question):
+        return False
+    return event.is_tome() or bool(_FILE_ANALYSIS_INTENT.search(question))
+
+
+def _result_url(result: object) -> str:
+    if isinstance(result, str):
+        candidate = result.strip()
+    elif isinstance(result, dict):
+        candidate = str(
+            result.get("url")
+            or result.get("download_url")
+            or result.get("downloadUrl")
+            or ""
+        ).strip()
+    else:
+        candidate = ""
+    return candidate[:2_048] if candidate.startswith(("http://", "https://")) else ""
+
+
+async def _resolve_file_references(
+    event: MessageEvent,
+    bot: Optional[object],
+    files: List[MessageFile],
+) -> List[dict]:
+    resolved = []
+    for file in files:
+        url = file.url
+        if not url and file.file_id:
+            if bot is None:
+                continue
+            try:
+                if isinstance(event, GroupMessageEvent):
+                    result = await bot.call_api(
+                        "get_group_file_url",
+                        group_id=event.group_id,
+                        file_id=file.file_id,
+                        busid=file.busid,
+                    )
+                else:
+                    result = await bot.call_api(
+                        "get_private_file_url",
+                        user_id=event.user_id,
+                        file_id=file.file_id,
+                    )
+                url = _result_url(result)
+            except Exception as error:  # noqa: BLE001
+                _log_failure("引用文件地址读取", error)
+        if url:
+            resolved.append({"name": file.name, "url": url})
+    return resolved
+
+
+async def _build_wrapped_message(
+    event: MessageEvent,
+    question: str,
+    *,
+    bot: Optional[object] = None,
+) -> str:
+    runtime_bot = bot
+    quoted_message = None
+    if extract_reply_message_id(event):
+        runtime_bot = runtime_bot or get_bot(str(event.self_id))
+        quoted_message = await _fetch_quoted_message(event, runtime_bot)
+    image_urls, video_urls = extract_event_media(
+        event,
+        reply_message=quoted_message,
+    )
+    message_files = extract_event_files(
+        event,
+        reply_message=quoted_message,
+    )
+    files = []
+    if message_files and _should_include_files(event, question):
+        if any(not file.url for file in message_files):
+            runtime_bot = runtime_bot or get_bot(str(event.self_id))
+        files = await _resolve_file_references(event, runtime_bot, message_files)
+    media_description = describe_event_media(
+        event,
+        reply_message=quoted_message,
+    )
+    enriched_question = question.strip()
+    if media_description and media_description not in enriched_question:
+        enriched_question = (
+            f"{enriched_question}\n{media_description}"
+            if enriched_question
+            else media_description
+        )
+    display_name = (
+        _display_name_for_event(event)
+        if isinstance(event, GroupMessageEvent)
+        else ""
+    )
+    memory_samples = (
+        _take_memory_snapshot(event) or []
+        if isinstance(event, GroupMessageEvent)
+        else []
+    )
     return encode_bridge_request(
         display_name=display_name,
         memory_samples=memory_samples,
         image_urls=image_urls,
         video_urls=video_urls,
+        files=files,
         directed=event.is_tome(),
-        question=question,
+        question=enriched_question,
     )
 
 
@@ -489,6 +648,25 @@ def _status_text() -> str:
     )
 
 
+def _media_question(
+    event: MessageEvent,
+    *,
+    include_files: bool = False,
+) -> str:
+    description = describe_event_media(event)
+    if description:
+        return description
+    image_urls, video_urls = extract_event_media(event)
+    files = extract_event_files(event)
+    if image_urls or video_urls:
+        return "请分析这张图片或视频。"
+    if files and include_files:
+        return "请分析这个文件。"
+    if extract_reply_message_id(event):
+        return "请分析引用内容。"
+    return ""
+
+
 @ai_command.handle()
 async def handle_ai_command(
     event: MessageEvent,
@@ -525,10 +703,8 @@ async def handle_ai_mention(event: MessageEvent) -> None:
         return
     question = event.get_plaintext().strip()
     if not question:
-        image_urls, video_urls = extract_event_media(event)
-        if image_urls or video_urls:
-            question = "请分析这张图片或视频。"
-        else:
+        question = _media_question(event, include_files=True)
+        if not question:
             reply = getattr(event, "reply", None)
             reply_sender = getattr(reply, "sender", None)
             if str(getattr(reply_sender, "user_id", "")) == str(event.self_id):
@@ -553,7 +729,7 @@ async def handle_ai_mention(event: MessageEvent) -> None:
 async def handle_ai_passive(event: GroupMessageEvent) -> None:
     if not CONFIG.enabled or CONFIG_ERROR or str(event.user_id) == str(event.self_id):
         return
-    question = event.get_plaintext().strip()
+    question = event.get_plaintext().strip() or _media_question(event)
     if not should_passively_reply(
         question,
         directed=event.is_tome(),

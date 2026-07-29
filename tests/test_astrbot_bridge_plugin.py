@@ -3,9 +3,10 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import nonebot
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message
+from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
 
 nonebot.init()
 
@@ -36,7 +37,7 @@ def group_event(
         message_id=message_id,
         message=onebot_message,
         original_message=onebot_message,
-        raw_message=message,
+        raw_message=str(onebot_message),
         font=0,
         sender={
             "user_id": user_id,
@@ -48,6 +49,185 @@ def group_event(
 
 
 class AstrBotBridgePluginMemoryTests(unittest.TestCase):
+    def test_quoted_image_is_fetched_from_onebot(self):
+        class FakeBot:
+            async def get_msg(self, *, message_id):
+                self.message_id = message_id
+                return {
+                    "message_type": "group",
+                    "group_id": 10001,
+                    "message": Message(
+                        [
+                            MessageSegment.image(
+                                "https://multimedia.nt.qq.com.cn/quoted.jpg"
+                            )
+                        ]
+                    )
+                }
+
+        async def scenario():
+            event = group_event(
+                message=Message(
+                    [
+                        MessageSegment("reply", {"id": "549327693"}),
+                        MessageSegment.text("这是什么"),
+                    ]
+                ),
+            )
+            bot = FakeBot()
+            wrapped = await bridge_plugin._build_wrapped_message(
+                event,
+                "这是什么",
+                bot=bot,
+            )
+            return bot.message_id, split_prompt_and_system_context(wrapped)[2]
+
+        message_id, envelope = asyncio.run(scenario())
+
+        self.assertEqual(message_id, "549327693")
+        self.assertEqual(
+            envelope.image_urls,
+            ["https://multimedia.nt.qq.com.cn/quoted.jpg"],
+        )
+
+    def test_quoted_group_file_url_is_resolved_from_onebot(self):
+        class FakeBot:
+            async def get_msg(self, *, message_id):
+                return {
+                    "message_type": "group",
+                    "group_id": 10001,
+                    "message": Message(
+                        [
+                            MessageSegment(
+                                "file",
+                                {
+                                    "file": "课表.xlsx",
+                                    "file_id": "file-456",
+                                    "busid": 102,
+                                },
+                            )
+                        ]
+                    )
+                }
+
+            async def call_api(self, api, **data):
+                self.file_api = (api, data)
+                return {"url": "https://qfile.qq.com/timetable.xlsx"}
+
+        async def scenario():
+            event = group_event(
+                message=Message(
+                    [
+                        MessageSegment("reply", {"id": "803547687"}),
+                        MessageSegment.text("分析这个文件"),
+                    ]
+                ),
+            )
+            bot = FakeBot()
+            wrapped = await bridge_plugin._build_wrapped_message(
+                event,
+                "分析这个文件",
+                bot=bot,
+            )
+            return bot.file_api, split_prompt_and_system_context(wrapped)[2]
+
+        file_api, envelope = asyncio.run(scenario())
+
+        self.assertEqual(file_api[0], "get_group_file_url")
+        self.assertEqual(file_api[1]["file_id"], "file-456")
+        self.assertEqual(envelope.files[0].name, "课表.xlsx")
+        self.assertEqual(
+            envelope.files[0].url,
+            "https://qfile.qq.com/timetable.xlsx",
+        )
+
+    def test_quoted_message_from_another_group_is_rejected(self):
+        class FakeBot:
+            async def get_msg(self, *, message_id):
+                return {
+                    "message_type": "group",
+                    "group_id": 99999,
+                    "message": Message(
+                        [
+                            MessageSegment.image(
+                                "https://multimedia.nt.qq.com.cn/private.jpg"
+                            )
+                        ]
+                    ),
+                }
+
+        async def scenario():
+            event = group_event(
+                message=Message(
+                    [
+                        MessageSegment("reply", {"id": "123456"}),
+                        MessageSegment.text("看看这个"),
+                    ]
+                ),
+            )
+            wrapped = await bridge_plugin._build_wrapped_message(
+                event,
+                "看看这个",
+                bot=FakeBot(),
+            )
+            return split_prompt_and_system_context(wrapped)[2]
+
+        envelope = asyncio.run(scenario())
+
+        self.assertEqual(envelope.image_urls, [])
+
+    def test_private_quote_requires_matching_peer_metadata(self):
+        event = SimpleNamespace(user_id=20001, self_id=99999)
+        message = Message([MessageSegment.text("仅限当前私聊")])
+
+        missing_peer = bridge_plugin._message_from_api_result(
+            {
+                "message_type": "private",
+                "user_id": 99999,
+                "message": message,
+            },
+            event,
+        )
+        matching_peer = bridge_plugin._message_from_api_result(
+            {
+                "message_type": "private",
+                "user_id": 99999,
+                "target_id": 20001,
+                "message": message,
+            },
+            event,
+        )
+
+        self.assertIsNone(missing_peer)
+        self.assertEqual(matching_peer, message)
+
+    def test_passive_file_is_only_forwarded_for_explicit_analysis(self):
+        async def scenario(question):
+            event = group_event(
+                message=Message(
+                    [
+                        MessageSegment(
+                            "file",
+                            {
+                                "file": "成员名单.txt",
+                                "url": "https://qfile.qq.com/members.txt",
+                            },
+                        ),
+                        MessageSegment.text(question),
+                    ]
+                ),
+            )
+            wrapped = await bridge_plugin._build_wrapped_message(event, question)
+            return split_prompt_and_system_context(wrapped)[2]
+
+        ordinary = asyncio.run(scenario("大家下午好"))
+        explicit = asyncio.run(scenario("请分析这个文件"))
+        negated = asyncio.run(scenario("不要分析这个文件"))
+
+        self.assertEqual(ordinary.files, [])
+        self.assertEqual(explicit.files[0].name, "成员名单.txt")
+        self.assertEqual(negated.files, [])
+
     def test_disabled_bridge_does_not_collect_group_messages(self):
         async def scenario():
             await bridge_plugin._record_group_message(group_event())

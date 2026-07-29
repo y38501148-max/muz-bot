@@ -54,6 +54,9 @@ muz-primary -> muz-secondary -> muz-tertiary
 
 配置器将 `request_max_retries` 设为 1，避免第一路故障时长时间阻塞；
 每个 Provider 可以使用不同 `api_base`、模型、Key 和可选 `proxy`。
+`modalities` 用于声明模型能力；支持图片的模型配置为
+`["text", "image"]`，纯文本降级模型配置为 `["text"]`。AstrBot 会在
+切换到纯文本降级模型时移除图片块，避免整个降级链因模态不兼容失败。
 `proxy` 支持 HTTP(S) 与 SOCKS5 地址；留空时保持直连。`api_base`
 既可填写顶级 URL，也可填写 `/v1`、`/v1/chat/completions` 或
 `/v1/responses` 完整地址；配置器会统一规范为 OpenAI SDK 所需的
@@ -84,6 +87,44 @@ AstrBot 的 Provider 类型。
 每群 120 次/小时、全局 300 次/小时，避免持续补队造成无限付费调用。
 Agent 单次请求最多执行 1 步，不向模型开放可调用工具。
 
+## NoneBot 桥接配置
+
+桥接配置位于：
+
+```text
+/root/muz-bot/data/astrbot_bridge/config.json
+```
+
+修改 JSON 后需要重启 NoneBot 的 `bot` tmux 会话。常用配置如下：
+
+- `PASSIVE_TRIGGER_PROBABILITY`：普通群消息被动触发概率，范围 `0` 到 `1`；
+  当前为 `0.25`，即 25%。`0` 表示关闭被动触发，`1` 表示每条均触发。
+- `MAX_CONCURRENT`：不同群或私聊可同时处理的模型请求数，范围 `1` 到 `20`。
+- `QUEUE_WAIT_SECONDS`：排队消息最长等待时间，范围 `1` 到 `600` 秒。
+- `MIN_INTERVAL_SECONDS`：同一单群对话两次模型请求的最小间隔。
+- `TIMEOUT_SECONDS`：单次 AstrBot 请求超时。
+- `MEMBER_REQUESTS_PER_HOUR`、`GROUP_REQUESTS_PER_HOUR`、
+  `GLOBAL_REQUESTS_PER_HOUR`：成员、群和全局每小时调用预算。
+- `ASTRBOT_BASE_URL`、`CONFIG_ID`：AstrBot 本机地址和使用的配置档案。
+- `API_KEY`：AstrBot OpenAPI 密钥；属于私密配置，不应发送到群里或提交 Git。
+
+`@机器人`、引用机器人以及 `/ai 状态` 不受被动概率控制。修改示例：
+
+```bash
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("/root/muz-bot/data/astrbot_bridge/config.json")
+config = json.loads(path.read_text())
+config["PASSIVE_TRIGGER_PROBABILITY"] = 0.25
+path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n")
+PY
+tmux kill-session -t bot
+tmux new-session -d -s bot -c /root/muz-bot \
+  "exec ./venv/bin/python -u bot.py"
+```
+
 ## 联网搜索与多模态
 
 Gateway 在调用模型之前处理联网资料，不给模型开放可调用工具。它只会
@@ -98,7 +139,10 @@ Gateway 在调用模型之前处理联网资料，不给模型开放可调用工
 完成 TLS 证书校验；每次跳转都会重新验证，避免 DNS 重绑定变成内网
 探测。Shell、任意文件访问、Computer Use、Cron、MCP 与子代理均禁用。
 
-QQ 图片和视频只接受受信任的腾讯/QQ CDN 主机，并经过公网地址校验。
+QQ 图片、表情包、视频和引用文件只接受受信任的腾讯/QQ CDN 主机，并经过
+公网地址校验。引用消息通过 OneBot `get_msg` 主动展开；普通 QQ 表情会转换
+为名称，商城表情优先作为图片分析。引用的 PDF、DOCX、PPTX、XLSX 和常见
+文本文件会限量提取为本轮临时、不可信上下文，不执行文件中的代码或指令。
 图片在解码前限制为单帧、最多约 1,677 万像素，并全局串行压缩。
 视频最多接收一条、25 MiB，并用 ffmpeg 抽取最多 4 张关键帧，因此属于
 关键帧分析而非完整音视频理解。视频还限制为 120 秒、最高 4K，媒体

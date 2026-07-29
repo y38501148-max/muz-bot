@@ -3,7 +3,12 @@ from types import SimpleNamespace
 
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
-from astrbot_bridge_media import extract_event_media
+from astrbot_bridge_media import (
+    describe_event_media,
+    extract_event_files,
+    extract_event_media,
+    extract_reply_message_id,
+)
 
 
 class BridgeMediaTests(unittest.TestCase):
@@ -55,6 +60,71 @@ class BridgeMediaTests(unittest.TestCase):
 
         self.assertEqual(len(images), 4)
         self.assertEqual(len(videos), 1)
+
+    def test_describes_qq_and_market_faces(self):
+        event = SimpleNamespace(
+            message=Message(
+                [
+                    MessageSegment(
+                        "face",
+                        {
+                            "id": "297",
+                            "raw": {"faceText": "[拜谢]"},
+                        },
+                    ),
+                    MessageSegment(
+                        "mface",
+                        {
+                            "emoji_id": "123",
+                            "summary": "猫猫震惊",
+                        },
+                    ),
+                ]
+            ),
+            reply=None,
+        )
+
+        self.assertEqual(
+            describe_event_media(event),
+            "消息包含QQ表情：拜谢；表情包：猫猫震惊",
+        )
+
+    def test_extracts_reply_id_from_original_message(self):
+        event = SimpleNamespace(
+            message=Message(
+                [
+                    MessageSegment("reply", {"id": "549327693"}),
+                    MessageSegment.text("这是什么"),
+                ]
+            ),
+            reply=None,
+        )
+
+        self.assertEqual(extract_reply_message_id(event), "549327693")
+
+    def test_extracts_quoted_file_metadata_and_url(self):
+        event = SimpleNamespace(message=Message("请分析"), reply=None)
+        quoted = Message(
+            [
+                MessageSegment(
+                    "file",
+                    {
+                        "file": "报告.pdf",
+                        "file_id": "file-123",
+                        "busid": 102,
+                        "url": "https://qfile.qq.com/report.pdf",
+                    },
+                )
+            ]
+        )
+
+        files = extract_event_files(event, reply_message=quoted)
+
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].name, "报告.pdf")
+        self.assertEqual(files[0].file_id, "file-123")
+        self.assertEqual(files[0].busid, 102)
+        self.assertEqual(files[0].url, "https://qfile.qq.com/report.pdf")
 
 
 if __name__ == "__main__":

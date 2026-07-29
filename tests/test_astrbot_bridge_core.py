@@ -44,7 +44,7 @@ class BridgeConfigTests(unittest.TestCase):
 
         self.assertFalse(config.enabled)
         self.assertEqual(config.base_url, "http://127.0.0.1:6185")
-        self.assertEqual(config.passive_trigger_probability, 0.42)
+        self.assertEqual(config.passive_trigger_probability, 0.25)
 
     def test_enabled_config_requires_api_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:

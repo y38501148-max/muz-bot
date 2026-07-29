@@ -5,6 +5,7 @@
     "model": "model-primary",
     "key_env": "MUZ_LLM_PRIMARY_KEY",
     "reasoning_effort": "high",
+    "modalities": ["text", "image"],
     "proxy": ""
   },
   {
@@ -13,6 +14,7 @@
     "model": "model-secondary",
     "key_env": "MUZ_LLM_SECONDARY_KEY",
     "reasoning_effort": "high",
+    "modalities": ["text", "image"],
     "proxy": ""
   },
   {
@@ -21,6 +23,7 @@
     "model": "model-tertiary",
     "key_env": "MUZ_LLM_TERTIARY_KEY",
     "reasoning_effort": "max",
+    "modalities": ["text"],
     "proxy": ""
   }
 ]

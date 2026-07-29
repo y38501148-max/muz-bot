@@ -21,6 +21,7 @@ MANAGED_PROVIDER_IDS = (
 ENV_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 PROXY_SCHEMES = frozenset({"http", "https", "socks5", "socks5h"})
+SUPPORTED_MODALITIES = frozenset({"text", "image", "audio", "tool_use"})
 
 
 def normalize_openai_base_url(value: object) -> str:
@@ -98,6 +99,18 @@ def _validate_provider_specs(provider_specs: object) -> List[Dict]:
         key_env = str(raw.get("key_env") or "").strip()
         reasoning_effort = str(raw.get("reasoning_effort") or "").strip().casefold()
         proxy = normalize_proxy_url(raw.get("proxy"))
+        raw_modalities = raw.get("modalities", ["text"])
+        if not isinstance(raw_modalities, list):
+            raise TypeError(f"第 {index} 个 Provider 的 modalities 必须是数组")
+        modalities = []
+        for value in raw_modalities:
+            modality = str(value or "").strip().casefold()
+            if modality not in SUPPORTED_MODALITIES:
+                raise ValueError(f"第 {index} 个 Provider 包含未知模型能力")
+            if modality not in modalities:
+                modalities.append(modality)
+        if "text" not in modalities:
+            raise ValueError(f"第 {index} 个 Provider 必须支持 text")
         parsed_url = urlparse(api_base)
         if not identifier or not model:
             raise ValueError(f"第 {index} 个 Provider 缺少 id 或 model")
@@ -122,6 +135,7 @@ def _validate_provider_specs(provider_specs: object) -> List[Dict]:
                 "model": model,
                 "key_env": key_env,
                 "reasoning_effort": reasoning_effort,
+                "modalities": modalities,
                 "proxy": proxy,
             }
         )
@@ -139,7 +153,7 @@ def _provider_config(spec: Dict) -> Dict:
         "provider_source_id": source_id,
         "model": spec["model"],
         "enable": True,
-        "modalities": [],
+        "modalities": list(spec["modalities"]),
         "custom_extra_body": (
             {"reasoning_effort": spec["reasoning_effort"]}
             if spec["reasoning_effort"]
@@ -218,6 +232,7 @@ def build_astrbot_config(
         "dequeue_context_length": 8,
         "fallback_max_context_tokens": TECHNICAL_CONTEXT_WINDOW,
         "web_search": False,
+        "sanitize_context_by_modalities": True,
         "max_agent_step": 1,
         "tool_call_timeout": 30,
         "computer_use_runtime": "none",

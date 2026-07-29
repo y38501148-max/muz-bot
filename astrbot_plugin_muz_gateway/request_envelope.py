@@ -14,11 +14,18 @@ MAX_MEDIA_URLS = 5
 
 
 @dataclass(frozen=True)
+class BridgeFile:
+    name: str
+    url: str
+
+
+@dataclass(frozen=True)
 class BridgeEnvelope:
     display_name: str
     memory_samples: List[str]
     image_urls: List[str]
     video_urls: List[str]
+    files: List[BridgeFile]
     directed: bool
     question: str
 
@@ -40,12 +47,32 @@ def _clean_urls(values: object, limit: int) -> List[str]:
     return result
 
 
+def _clean_files(values: object, limit: int = 2) -> List[BridgeFile]:
+    if not isinstance(values, list):
+        return []
+    result = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        name = _clean_text(value.get("name"), 160) or "引用文件"
+        url = str(value.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        candidate = BridgeFile(name=name, url=url[:2_048])
+        if candidate not in result:
+            result.append(candidate)
+        if len(result) >= limit:
+            break
+    return result
+
+
 def encode_bridge_request(
     *,
     display_name: object,
     memory_samples: object,
     image_urls: object,
     video_urls: object,
+    files: object = None,
     directed: object,
     question: object,
 ) -> str:
@@ -61,6 +88,10 @@ def encode_bridge_request(
         "m": samples,
         "i": _clean_urls(image_urls, 4),
         "v": _clean_urls(video_urls, 1),
+        "f": [
+            {"n": file.name, "u": file.url}
+            for file in _clean_files(files)
+        ],
         "d": bool(directed),
     }
     encoded = base64.urlsafe_b64encode(
@@ -102,11 +133,25 @@ def decode_bridge_request(value: object) -> BridgeEnvelope:
         for sample in raw_samples[:10]
         if _clean_text(sample, 240)
     ]
+    raw_files = raw.get("f")
+    files = []
+    if isinstance(raw_files, list):
+        files = _clean_files(
+            [
+                {
+                    "name": value.get("n"),
+                    "url": value.get("u"),
+                }
+                for value in raw_files
+                if isinstance(value, dict)
+            ]
+        )
     return BridgeEnvelope(
         display_name=name,
         memory_samples=samples,
         image_urls=_clean_urls(raw.get("i"), 4),
         video_urls=_clean_urls(raw.get("v"), 1),
+        files=files,
         directed=raw.get("d") is True,
         question=question.strip(),
     )

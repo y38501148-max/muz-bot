@@ -61,18 +61,21 @@ class AstrBotConfiguratorTests(unittest.TestCase):
                 "key_env": "MUZ_LLM_PRIMARY_KEY",
                 "reasoning_effort": "high",
                 "proxy": "http://192.168.16.1:17890",
+                "modalities": ["text", "image"],
             },
             {
                 "id": "muz-secondary",
                 "api_base": "https://two.example/v1",
                 "model": "model-b",
                 "key_env": "MUZ_LLM_SECONDARY_KEY",
+                "modalities": ["text", "image"],
             },
             {
                 "id": "muz-tertiary",
                 "api_base": "https://three.example/v1",
                 "model": "model-c",
                 "key_env": "MUZ_LLM_TERTIARY_KEY",
+                "modalities": ["text"],
             },
         ]
 
@@ -96,6 +99,11 @@ class AstrBotConfiguratorTests(unittest.TestCase):
             {"reasoning_effort": "high"},
         )
         self.assertEqual(
+            providers["muz-primary"]["modalities"],
+            ["text", "image"],
+        )
+        self.assertEqual(providers["muz-tertiary"]["modalities"], ["text"])
+        self.assertEqual(
             sources["muz-primary_source"]["proxy"],
             "http://192.168.16.1:17890",
         )
@@ -117,6 +125,9 @@ class AstrBotConfiguratorTests(unittest.TestCase):
             "truncate_by_turns",
         )
         self.assertFalse(result["provider_settings"]["web_search"])
+        self.assertTrue(
+            result["provider_settings"]["sanitize_context_by_modalities"]
+        )
         self.assertEqual(result["provider_settings"]["max_agent_step"], 1)
         self.assertEqual(result["provider_settings"]["tool_call_timeout"], 30)
         self.assertEqual(

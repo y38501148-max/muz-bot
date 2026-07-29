@@ -620,6 +620,24 @@ async def download_public_image(url: object, target: Path) -> None:
         handle.write(response.content)
 
 
+async def download_public_file(url: object, target: Path) -> None:
+    response = await _curl_pinned_fetch(
+        url,
+        max_bytes=20 * 1024 * 1024,
+        allowed_host_suffixes=QQ_MEDIA_HOST_SUFFIXES,
+    )
+    content_type = response.headers.get("content-type", "").casefold()
+    if content_type.startswith(("text/html", "application/xhtml+xml")):
+        raise ValueError("文件链接返回了网页而不是文件")
+    descriptor = os.open(
+        str(target),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(response.content)
+
+
 def _validate_image_dimensions(width: int, height: int, frames: int) -> None:
     if width < 1 or height < 1 or width * height > MAX_IMAGE_PIXELS or frames != 1:
         raise ValueError("图片尺寸过大或不是受支持的单帧图片")
