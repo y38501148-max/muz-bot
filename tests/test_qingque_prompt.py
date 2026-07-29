@@ -27,7 +27,7 @@ class QingquePromptTests(unittest.TestCase):
             "绝大多数回复完全不提",
             "网页搜索",
             "视频",
-            "每次回复最多 30 个字符",
+            "不设固定字数上限",
             "避免客服腔、说明书腔和 AI 模板感",
         ):
             with self.subTest(required=required):
@@ -40,8 +40,11 @@ class QingquePromptTests(unittest.TestCase):
         prompt = PROMPT_PATH.read_text(encoding="utf-8")
 
         for required in (
-            "30 个字符只是硬上限，不是目标",
-            "闲聊通常只回 4 到 16 个字",
+            "回复长度由内容决定",
+            "惊讶、开心、得意、犯懒",
+            "反应要有情绪",
+            "不要每句都用同一个语气词",
+            "活泼不等于强行撒娇",
             "不要自称“聊天助手”",
             "不要说“青雀风格”",
             "你说得对，可能是……我认错了",
@@ -56,6 +59,8 @@ class QingquePromptTests(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required, prompt)
+
+        self.assertNotIn("30 个字符", prompt)
 
 
 if __name__ == "__main__":
