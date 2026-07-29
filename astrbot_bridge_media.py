@@ -24,13 +24,14 @@ def _event_messages(
     event: object,
     *,
     reply_message: Optional[Message] = None,
+    include_event_reply: bool = True,
 ) -> List[Message]:
     messages: List[Message] = []
-    for candidate in (
-        getattr(event, "message", None),
-        getattr(getattr(event, "reply", None), "message", None),
-        reply_message,
-    ):
+    candidates = [getattr(event, "message", None)]
+    if include_event_reply:
+        candidates.append(getattr(getattr(event, "reply", None), "message", None))
+    candidates.append(reply_message)
+    for candidate in candidates:
         if isinstance(candidate, Message) and candidate not in messages:
             messages.append(candidate)
     return messages
@@ -57,6 +58,19 @@ def _urls_from_message(
         if candidate not in target and len(target) < limit:
             target.append(candidate)
     return images, videos
+
+
+def extract_message_media(
+    message: Iterable,
+    *,
+    max_images: int = 4,
+    max_videos: int = 1,
+) -> Tuple[List[str], List[str]]:
+    return _urls_from_message(
+        message,
+        max_images=max_images,
+        max_videos=max_videos,
+    )
 
 
 def _clean_label(value: object) -> str:
@@ -91,13 +105,25 @@ def _descriptions_from_message(message: Iterable) -> List[str]:
     return descriptions
 
 
+def describe_message_media(message: Iterable) -> str:
+    descriptions = _descriptions_from_message(message)
+    if not descriptions:
+        return ""
+    return "消息包含" + "；".join(descriptions[:4])
+
+
 def describe_event_media(
     event: object,
     *,
     reply_message: Optional[Message] = None,
+    include_event_reply: bool = True,
 ) -> str:
     descriptions: List[str] = []
-    for message in _event_messages(event, reply_message=reply_message):
+    for message in _event_messages(
+        event,
+        reply_message=reply_message,
+        include_event_reply=include_event_reply,
+    ):
         descriptions.extend(
             item
             for item in _descriptions_from_message(message)
@@ -155,14 +181,34 @@ def _file_from_segment(segment: object) -> Optional[MessageFile]:
     )
 
 
+def extract_message_files(
+    message: Iterable,
+    *,
+    max_files: int = 2,
+) -> List[MessageFile]:
+    files = []
+    for segment in message:
+        candidate = _file_from_segment(segment)
+        if candidate and candidate not in files:
+            files.append(candidate)
+        if len(files) >= max_files:
+            break
+    return files
+
+
 def extract_event_files(
     event: object,
     *,
     reply_message: Optional[Message] = None,
     max_files: int = 2,
+    include_event_reply: bool = True,
 ) -> List[MessageFile]:
     files: List[MessageFile] = []
-    for message in _event_messages(event, reply_message=reply_message):
+    for message in _event_messages(
+        event,
+        reply_message=reply_message,
+        include_event_reply=include_event_reply,
+    ):
         for segment in message:
             candidate = _file_from_segment(segment)
             if candidate and candidate not in files:
@@ -178,11 +224,16 @@ def extract_event_media(
     max_images: int = 4,
     max_videos: int = 1,
     reply_message: Optional[Message] = None,
+    include_event_reply: bool = True,
 ) -> Tuple[List[str], List[str]]:
     """Extract bounded HTTP media references from a OneBot event and its reply."""
     images: List[str] = []
     videos: List[str] = []
-    for message in _event_messages(event, reply_message=reply_message):
+    for message in _event_messages(
+        event,
+        reply_message=reply_message,
+        include_event_reply=include_event_reply,
+    ):
         next_images, next_videos = _urls_from_message(
             message,
             max_images=max_images - len(images),

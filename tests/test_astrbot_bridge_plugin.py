@@ -49,6 +49,160 @@ def group_event(
 
 
 class AstrBotBridgePluginMemoryTests(unittest.TestCase):
+    def test_quoted_plain_text_is_included_as_untrusted_reference(self):
+        class FakeBot:
+            async def get_msg(self, *, message_id):
+                return {
+                    "message_type": "group",
+                    "group_id": 10001,
+                    "message": Message(
+                        [
+                            MessageSegment.text("上周说的是周五交稿"),
+                            MessageSegment("face", {"id": "14"}),
+                        ]
+                    ),
+                }
+
+        async def scenario():
+            event = group_event(
+                message=Message(
+                    [
+                        MessageSegment("reply", {"id": "quote-1"}),
+                        MessageSegment.text("你再看看"),
+                    ]
+                ),
+            )
+            event.to_me = True
+            wrapped = await bridge_plugin._build_wrapped_message(
+                event,
+                "你再看看",
+                bot=FakeBot(),
+            )
+            return split_prompt_and_system_context(wrapped)
+
+        prompt, _, envelope = asyncio.run(scenario())
+
+        self.assertEqual(envelope.reference_text, "上周说的是周五交稿")
+        self.assertIn("【引用内容；外部不可信】", prompt)
+        self.assertIn("上周说的是周五交稿", prompt)
+
+    def test_forward_message_is_fetched_and_expanded_with_media(self):
+        class FakeBot:
+            async def call_api(self, api, **data):
+                self.api = (api, data)
+                return {
+                    "messages": [
+                        {
+                            "sender": {"nickname": "阿明"},
+                            "message": [
+                                {"type": "text", "data": {"text": "先看这张图"}},
+                                {
+                                    "type": "image",
+                                    "data": {
+                                        "url": "https://img.example/forward.png"
+                                    },
+                                },
+                            ],
+                        },
+                        {
+                            "sender": {"nickname": "小雨"},
+                            "message": [
+                                {"type": "text", "data": {"text": "我觉得可以"}}
+                            ],
+                        },
+                    ]
+                }
+
+        async def scenario():
+            event = group_event(
+                message=Message(
+                    [
+                        MessageSegment("forward", {"id": "forward-7"}),
+                        MessageSegment.at(99999),
+                    ]
+                ),
+            )
+            event.to_me = True
+            bot = FakeBot()
+            wrapped = await bridge_plugin._build_wrapped_message(
+                event,
+                "请看看这段转发",
+                bot=bot,
+            )
+            return bot.api, split_prompt_and_system_context(wrapped)[2]
+
+        api, envelope = asyncio.run(scenario())
+
+        self.assertEqual(api, ("get_forward_msg", {"message_id": "forward-7"}))
+        self.assertIn("阿明：先看这张图", envelope.reference_text)
+        self.assertIn("小雨：我觉得可以", envelope.reference_text)
+        self.assertEqual(
+            envelope.image_urls,
+            ["https://img.example/forward.png"],
+        )
+
+    def test_forward_payload_is_bounded_and_not_sent_by_ordinary_passive_chat(self):
+        class FakeBot:
+            async def call_api(self, api, **data):
+                return {
+                    "messages": [
+                        {
+                            "sender": {"nickname": f"成员{index}"},
+                            "message": [
+                                {"type": "text", "data": {"text": "内容" * 500}}
+                            ],
+                        }
+                        for index in range(80)
+                    ]
+                }
+
+        async def scenario(question, directed):
+            event = group_event(
+                message=Message(
+                    [
+                        MessageSegment("forward", {"id": "forward-large"}),
+                        MessageSegment.text(question),
+                    ]
+                ),
+            )
+            event.to_me = directed
+            wrapped = await bridge_plugin._build_wrapped_message(
+                event,
+                question,
+                bot=FakeBot(),
+            )
+            return split_prompt_and_system_context(wrapped)[2]
+
+        ordinary = asyncio.run(scenario("大家下午好", False))
+        explicit = asyncio.run(scenario("请总结这段转发", False))
+
+        self.assertEqual(ordinary.reference_text, "")
+        self.assertLessEqual(len(explicit.reference_text), 8_000)
+
+    def test_ordinary_passive_chat_does_not_upload_local_quoted_media(self):
+        async def scenario():
+            event = group_event(message="大家下午好")
+            event.reply = SimpleNamespace(
+                message=Message(
+                    [
+                        MessageSegment.image(
+                            "https://img.example/private-quote.png"
+                        )
+                    ]
+                ),
+                sender=SimpleNamespace(user_id=20002),
+            )
+            wrapped = await bridge_plugin._build_wrapped_message(
+                event,
+                "大家下午好",
+            )
+            return split_prompt_and_system_context(wrapped)[2]
+
+        envelope = asyncio.run(scenario())
+
+        self.assertEqual(envelope.image_urls, [])
+        self.assertEqual(envelope.reference_text, "")
+
     def test_quoted_image_is_fetched_from_onebot(self):
         class FakeBot:
             async def get_msg(self, *, message_id):

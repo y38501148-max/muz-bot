@@ -40,11 +40,21 @@ from astrbot_bridge_core import (
 from astrbot_bridge_media import (
     MessageFile,
     describe_event_media,
+    describe_message_media,
     extract_event_files,
     extract_event_media,
+    extract_message_files,
+    extract_message_media,
     extract_reply_message_id,
 )
 from astrbot_bridge_messages import as_plain_text_message
+from astrbot_bridge_references import (
+    ForwardItem,
+    ForwardSnapshot,
+    extract_forward_items,
+    extract_message_text,
+    parse_forward_payload,
+)
 from astrbot_member_memory import MemberMemoryStore
 from astrbot_plugin_muz_gateway.request_envelope import encode_bridge_request
 
@@ -99,6 +109,20 @@ _FILE_ANALYSIS_NEGATION = re.compile(
     r"(?:不要|别|无需|不必|不用|禁止|请勿|不想).{0,20}"
     r"(?:分析|查看|看看|读取|总结|识别|解释|检查|处理).{0,10}"
     r"(?:文件|文档|附件|表格|PDF)",
+    re.IGNORECASE,
+)
+_REFERENCE_ANALYSIS_INTENT = re.compile(
+    r"(?:分析|看看|查看|读取|总结|概括|解释|识别|评价).{0,12}"
+    r"(?:引用|回复|转发|聊天记录|这段|这条|这个)"
+    r"|(?:引用|回复|转发|聊天记录).{0,12}"
+    r"(?:内容|说了什么|讲了什么|是什么|总结|看看)"
+    r"|(?:这|这个|这条|这段).{0,8}(?:是什么|说了什么|内容)",
+    re.IGNORECASE,
+)
+_REFERENCE_ANALYSIS_NEGATION = re.compile(
+    r"(?:不要|别|无需|不必|不用|禁止|请勿|不想).{0,20}"
+    r"(?:分析|查看|看看|读取|总结|概括|解释|识别|处理).{0,10}"
+    r"(?:引用|回复|转发|聊天记录)",
     re.IGNORECASE,
 )
 DRIVER = get_driver()
@@ -362,6 +386,57 @@ def _should_include_files(event: MessageEvent, question: str) -> bool:
     return event.is_tome() or bool(_FILE_ANALYSIS_INTENT.search(question))
 
 
+def _should_include_references(event: MessageEvent, question: str) -> bool:
+    if _REFERENCE_ANALYSIS_NEGATION.search(question):
+        return False
+    return event.is_tome() or bool(_REFERENCE_ANALYSIS_INTENT.search(question))
+
+
+def _event_forward_items(event: MessageEvent) -> List[ForwardItem]:
+    result = []
+    seen = set()
+    for message in (
+        getattr(event, "original_message", None),
+        getattr(event, "message", None),
+    ):
+        for item in extract_forward_items(message):
+            key = item.message_id or repr(item.inline_content)[:256]
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(item)
+    return result[:2]
+
+
+async def _fetch_forward_snapshot(
+    bot: object,
+    items: List[ForwardItem],
+) -> ForwardSnapshot:
+    text_parts = []
+    segments = []
+    for item in items:
+        payload = item.inline_content
+        if not payload and item.message_id:
+            try:
+                payload = await bot.call_api(
+                    "get_forward_msg",
+                    message_id=item.message_id,
+                )
+            except Exception as error:  # noqa: BLE001
+                _log_failure("合并转发读取", error)
+                continue
+        snapshot = parse_forward_payload(payload)
+        if snapshot.text:
+            text_parts.append(snapshot.text)
+        segments.extend(snapshot.message)
+        if sum(len(part) for part in text_parts) >= 8_000:
+            break
+    return ForwardSnapshot(
+        text="\n".join(text_parts)[:8_000],
+        message=Message(segments),
+    )
+
+
 def _result_url(result: object) -> str:
     if isinstance(result, str):
         candidate = result.strip()
@@ -418,17 +493,48 @@ async def _build_wrapped_message(
 ) -> str:
     runtime_bot = bot
     quoted_message = None
-    if extract_reply_message_id(event):
+    include_references = _should_include_references(event, question)
+    forward_items = _event_forward_items(event) if include_references else []
+    if include_references and extract_reply_message_id(event):
         runtime_bot = runtime_bot or get_bot(str(event.self_id))
         quoted_message = await _fetch_quoted_message(event, runtime_bot)
+    local_quoted_message = getattr(getattr(event, "reply", None), "message", None)
+    if not isinstance(local_quoted_message, Message):
+        local_quoted_message = None
+    effective_quote = quoted_message or (
+        local_quoted_message if include_references else None
+    )
+    forward_snapshot = ForwardSnapshot(text="", message=Message())
+    if forward_items:
+        runtime_bot = runtime_bot or get_bot(str(event.self_id))
+        forward_snapshot = await _fetch_forward_snapshot(
+            runtime_bot,
+            forward_items,
+        )
     image_urls, video_urls = extract_event_media(
         event,
-        reply_message=quoted_message,
+        reply_message=effective_quote,
+        include_event_reply=False,
     )
+    forward_images, forward_videos = extract_message_media(
+        forward_snapshot.message,
+        max_images=max(0, 4 - len(image_urls)),
+        max_videos=max(0, 1 - len(video_urls)),
+    )
+    image_urls.extend(url for url in forward_images if url not in image_urls)
+    video_urls.extend(url for url in forward_videos if url not in video_urls)
     message_files = extract_event_files(
         event,
-        reply_message=quoted_message,
+        reply_message=effective_quote,
+        include_event_reply=False,
     )
+    if include_references and len(message_files) < 2:
+        for file in extract_message_files(
+            forward_snapshot.message,
+            max_files=2 - len(message_files),
+        ):
+            if file not in message_files:
+                message_files.append(file)
     files = []
     if message_files and _should_include_files(event, question):
         if any(not file.url for file in message_files):
@@ -436,8 +542,16 @@ async def _build_wrapped_message(
         files = await _resolve_file_references(event, runtime_bot, message_files)
     media_description = describe_event_media(
         event,
-        reply_message=quoted_message,
+        reply_message=effective_quote,
+        include_event_reply=False,
     )
+    forward_description = describe_message_media(forward_snapshot.message)
+    if forward_description:
+        media_description = (
+            f"{media_description}；{forward_description}"
+            if media_description
+            else forward_description
+        )
     enriched_question = question.strip()
     if media_description and media_description not in enriched_question:
         enriched_question = (
@@ -455,12 +569,19 @@ async def _build_wrapped_message(
         if isinstance(event, GroupMessageEvent)
         else []
     )
+    reference_parts = []
+    quoted_text = extract_message_text(effective_quote)
+    if quoted_text:
+        reference_parts.append(quoted_text)
+    if forward_snapshot.text:
+        reference_parts.append(forward_snapshot.text)
     return encode_bridge_request(
         display_name=display_name,
         memory_samples=memory_samples,
         image_urls=image_urls,
         video_urls=video_urls,
         files=files,
+        reference_text="\n".join(reference_parts)[:8_000],
         directed=event.is_tome(),
         question=enriched_question,
     )
@@ -652,6 +773,7 @@ def _media_question(
     event: MessageEvent,
     *,
     include_files: bool = False,
+    include_references: bool = False,
 ) -> str:
     description = describe_event_media(event)
     if description:
@@ -662,7 +784,9 @@ def _media_question(
         return "请分析这张图片或视频。"
     if files and include_files:
         return "请分析这个文件。"
-    if extract_reply_message_id(event):
+    if include_references and _event_forward_items(event):
+        return "请分析这段转发内容。"
+    if include_references and extract_reply_message_id(event):
         return "请分析引用内容。"
     return ""
 
@@ -703,7 +827,11 @@ async def handle_ai_mention(event: MessageEvent) -> None:
         return
     question = event.get_plaintext().strip()
     if not question:
-        question = _media_question(event, include_files=True)
+        question = _media_question(
+            event,
+            include_files=True,
+            include_references=True,
+        )
         if not question:
             reply = getattr(event, "reply", None)
             reply_sender = getattr(reply, "sender", None)
