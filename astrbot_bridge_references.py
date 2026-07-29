@@ -97,12 +97,12 @@ def _record_content(record: dict) -> object:
     )
 
 
-def _as_message(value: object) -> Optional[Message]:
+def _as_message(value: object, max_segments: int) -> Optional[Message]:
     if isinstance(value, Message):
         return value
     if isinstance(value, list):
         normalized = []
-        for item in value:
+        for item in value[:max_segments]:
             if isinstance(item, MessageSegment):
                 normalized.append(item)
             elif isinstance(item, dict) and item.get("type"):
@@ -118,7 +118,7 @@ def _as_message(value: object) -> Optional[Message]:
         return Message(normalized)
     if isinstance(value, str):
         try:
-            return Message(value)
+            return Message(value[:MAX_REFERENCE_CHARS])
         except (TypeError, ValueError):
             return None
     return None
@@ -135,7 +135,7 @@ def _render_message(
 ) -> str:
     if depth > 2:
         return "[嵌套转发已省略]"
-    message = _as_message(value)
+    message = _as_message(value, segment_budget[0])
     if message is None:
         return _clean_text(value, 500) if isinstance(value, str) else ""
     chunks = []
