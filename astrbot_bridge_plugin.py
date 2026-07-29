@@ -408,6 +408,24 @@ def _event_forward_items(event: MessageEvent) -> List[ForwardItem]:
     return result[:2]
 
 
+def _mentions_only_other_members(event: MessageEvent) -> bool:
+    targets = set()
+    for message in (
+        getattr(event, "original_message", None),
+        getattr(event, "message", None),
+    ):
+        if not isinstance(message, Message):
+            continue
+        for segment in message:
+            if str(getattr(segment, "type", "")).lower() != "at":
+                continue
+            data = getattr(segment, "data", {}) or {}
+            target = str(data.get("qq") or data.get("id") or "").strip()
+            if target:
+                targets.add(target)
+    return bool(targets) and str(event.self_id) not in targets
+
+
 async def _fetch_forward_snapshot(
     bot: object,
     items: List[ForwardItem],
@@ -855,7 +873,12 @@ async def handle_ai_mention(event: MessageEvent) -> None:
 
 @ai_passive.handle()
 async def handle_ai_passive(event: GroupMessageEvent) -> None:
-    if not CONFIG.enabled or CONFIG_ERROR or str(event.user_id) == str(event.self_id):
+    if (
+        not CONFIG.enabled
+        or CONFIG_ERROR
+        or str(event.user_id) == str(event.self_id)
+        or _mentions_only_other_members(event)
+    ):
         return
     question = event.get_plaintext().strip() or _media_question(event)
     if not should_passively_reply(

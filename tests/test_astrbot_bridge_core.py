@@ -44,7 +44,7 @@ class BridgeConfigTests(unittest.TestCase):
 
         self.assertFalse(config.enabled)
         self.assertEqual(config.base_url, "http://127.0.0.1:6185")
-        self.assertEqual(config.passive_trigger_probability, 0.25)
+        self.assertEqual(config.passive_trigger_probability, 0.15)
 
     def test_enabled_config_requires_api_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -83,13 +83,13 @@ class BridgeConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.json"
             path.write_text(
-                json.dumps({"PASSIVE_TRIGGER_PROBABILITY": 0.25}),
+                json.dumps({"PASSIVE_TRIGGER_PROBABILITY": 0.15}),
                 encoding="utf-8",
             )
 
             self.assertEqual(
                 load_bridge_config(path).passive_trigger_probability,
-                0.25,
+                0.15,
             )
 
             path.write_text(

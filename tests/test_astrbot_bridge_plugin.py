@@ -49,6 +49,59 @@ def group_event(
 
 
 class AstrBotBridgePluginMemoryTests(unittest.TestCase):
+    def test_passive_handler_skips_messages_mentioning_only_other_members(self):
+        async def unexpected_request(event, question):
+            raise AssertionError("不应触发模型请求")
+
+        async def scenario():
+            event = group_event(
+                message=Message(
+                    [
+                        MessageSegment.at(30003),
+                        MessageSegment.text("你看看这个"),
+                    ]
+                )
+            )
+            original_config = bridge_plugin.CONFIG
+            original_error = bridge_plugin.CONFIG_ERROR
+            original_ask = bridge_plugin._ask_astrbot
+            bridge_plugin.CONFIG = BridgeConfig(
+                enabled=True,
+                passive_trigger_probability=1,
+            )
+            bridge_plugin.CONFIG_ERROR = ""
+            bridge_plugin._ask_astrbot = unexpected_request
+            try:
+                await bridge_plugin.handle_ai_passive(event)
+            finally:
+                bridge_plugin.CONFIG = original_config
+                bridge_plugin.CONFIG_ERROR = original_error
+                bridge_plugin._ask_astrbot = original_ask
+
+        asyncio.run(scenario())
+
+    def test_other_member_mention_filter_keeps_direct_bot_mentions(self):
+        other_only = group_event(
+            message=Message(
+                [
+                    MessageSegment.at(30003),
+                    MessageSegment.text("在吗"),
+                ]
+            )
+        )
+        bot_and_other = group_event(
+            message=Message(
+                [
+                    MessageSegment.at(99999),
+                    MessageSegment.at(30003),
+                    MessageSegment.text("你俩看看"),
+                ]
+            )
+        )
+
+        self.assertTrue(bridge_plugin._mentions_only_other_members(other_only))
+        self.assertFalse(bridge_plugin._mentions_only_other_members(bot_and_other))
+
     def test_quoted_plain_text_is_included_as_untrusted_reference(self):
         class FakeBot:
             async def get_msg(self, *, message_id):

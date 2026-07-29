@@ -29,6 +29,9 @@ class QingquePromptTests(unittest.TestCase):
             "视频",
             "不设固定字数上限",
             "避免客服腔、说明书腔和 AI 模板感",
+            "轻微毒舌",
+            "不做人身攻击",
+            "严肃求助",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, prompt)

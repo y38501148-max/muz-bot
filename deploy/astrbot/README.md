@@ -105,7 +105,7 @@ Agent 单次请求最多执行 1 步，不向模型开放可调用工具。
 修改 JSON 后需要重启 NoneBot 的 `bot` tmux 会话。常用配置如下：
 
 - `PASSIVE_TRIGGER_PROBABILITY`：普通群消息被动触发概率，范围 `0` 到 `1`；
-  当前为 `0.25`，即 25%。`0` 表示关闭被动触发，`1` 表示每条均触发。
+  当前为 `0.15`，即 15%。`0` 表示关闭被动触发，`1` 表示每条均触发。
 - `MAX_CONCURRENT`：不同群或私聊可同时处理的模型请求数，范围 `1` 到 `20`。
 - `QUEUE_WAIT_SECONDS`：排队消息最长等待时间，范围 `1` 到 `600` 秒。
 - `MIN_INTERVAL_SECONDS`：同一单群对话两次模型请求的最小间隔。
@@ -115,7 +115,8 @@ Agent 单次请求最多执行 1 步，不向模型开放可调用工具。
 - `ASTRBOT_BASE_URL`、`CONFIG_ID`：AstrBot 本机地址和使用的配置档案。
 - `API_KEY`：AstrBot OpenAPI 密钥；属于私密配置，不应发送到群里或提交 Git。
 
-`@机器人`、引用机器人以及 `/ai 状态` 不受被动概率控制。修改示例：
+`@机器人`、引用机器人以及 `/ai 状态` 不受被动概率控制。仅 @ 其他群成员
+且未 @ 机器人时不会触发 AI 回复，也不会参与被动概率抽样。修改示例：
 
 ```bash
 python3 - <<'PY'
@@ -124,7 +125,7 @@ from pathlib import Path
 
 path = Path("/root/muz-bot/data/astrbot_bridge/config.json")
 config = json.loads(path.read_text())
-config["PASSIVE_TRIGGER_PROBABILITY"] = 0.25
+config["PASSIVE_TRIGGER_PROBABILITY"] = 0.15
 path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n")
 PY
 tmux kill-session -t bot

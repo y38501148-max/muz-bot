@@ -49,7 +49,7 @@ class BridgeConfig:
     timeout_seconds: float = 180.0
     max_concurrent: int = 3
     min_interval_seconds: float = 3.0
-    passive_trigger_probability: float = 0.25
+    passive_trigger_probability: float = 0.15
     queue_wait_seconds: float = 120.0
     member_requests_per_hour: int = 20
     group_requests_per_hour: int = 120
@@ -115,7 +115,7 @@ def load_bridge_config(path: Path) -> BridgeConfig:
         max_concurrent = int(raw.get("MAX_CONCURRENT", 3))
         min_interval_seconds = float(raw.get("MIN_INTERVAL_SECONDS", 3))
         passive_trigger_probability = float(
-            raw.get("PASSIVE_TRIGGER_PROBABILITY", 0.25)
+            raw.get("PASSIVE_TRIGGER_PROBABILITY", 0.15)
         )
         queue_wait_seconds = float(raw.get("QUEUE_WAIT_SECONDS", 120))
         member_requests_per_hour = int(raw.get("MEMBER_REQUESTS_PER_HOUR", 20))
