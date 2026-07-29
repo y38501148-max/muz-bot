@@ -49,6 +49,13 @@ class AstrBotBridgeMessageTests(unittest.TestCase):
 
         self.assertEqual(message.extract_plain_text(), source)
 
+    def test_extreme_reply_uses_only_transport_safety_limit(self):
+        message = as_plain_text_message("长" * 5_000)
+        text = message.extract_plain_text()
+
+        self.assertEqual(len(text), 4_000)
+        self.assertTrue(text.endswith("…（回复过长，已截断）"))
+
 
 if __name__ == "__main__":
     unittest.main()
